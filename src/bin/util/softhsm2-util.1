@@ -1,0 +1,273 @@
+.TH SOFTHSM2-UTIL 1 "22 September 2017" "SoftHSM"
+.SH NAME
+softhsm2-util \- support tool for libsofthsm2
+.SH SYNOPSIS
+.B softhsm2-util \-\-show-slots
+.PP
+.B softhsm2-util \-\-show-config
+.I var
+.PP
+.B softhsm2-util \-\-init-token
+.B \-\-free
+.B \-\-label
+.I text
+\\
+.ti +0.7i
+.RB [ \-\-so-pin
+.I PIN
+.B \-\-pin
+.IR PIN ]
+.PP
+.B softhsm2-util \-\-import
+.I path
+.RB [ \-\-import-type
+.IR type ]
+\\
+.ti +0.7i
+.RB [ \-\-file-pin
+.IR PIN ]
+.B \-\-token
+.I label
+.RB [ \-\-pin
+.I PIN]
+.B [\-\-no\-public\-key]
+\\
+.ti +0.7i
+.B \-\-label
+.I text
+.B \-\-id
+.I hex
+.RB [ \-\-pin
+.I PIN]
+.B \-\-label
+.I text
+.B \-\-id
+.I hex
+.PP
+.B softhsm2-util \-\-delete\-token
+.B \-\-token
+.I text
+.SH DESCRIPTION
+.B softhsm2-util
+is a support tool mainly for libsofthsm2. It can also
+be used with other PKCS#11 libraries by using the option
+.B \-\-module
+.PP
+Read the sections below to get more information on
+the libsofthsm2 and PKCS#11.
+Most applications assumes that the token they want
+to use is already initialized.
+It is then up to the user
+to initialize the PKCS#11 token.
+This is done by using the PKCS#11 interface,
+but instead of writing your own
+tool you can use the
+.B softhsm2-util
+tool.
+.PP
+Keys are usually created directly in the token,
+but the user may want to use an existing key pair.
+Keys can be imported to a token by using the PKCS#11 interface,
+but this tool can also be used if the
+user has the key pair in a PKCS#8 file.
+If you need to convert keys from
+BIND .private-key format over to PKCS#8,
+one can
+use
+.BR softhsm2-keyconv .
+.LP
+The libary
+.BR libsofthsm2 ,
+known as SoftHSM, provides cryptographic functionality
+by using the PKCS#11 API.
+It was developed as a part of the OpenDNSSEC project,
+thus designed to meet the requirements
+of OpenDNSSEC,
+but can also work together with other
+software that want to use the functionality
+of the PKCS#11 API.
+.PP
+SoftHSM is a software implementation of a generic cryptographic device with a PKCS#11 interface.
+These devices are often called tokens.
+Read in the manual softhsm2.conf(5) on how to create these
+tokens and how they are added to a slot in SoftHSM.
+.LP
+The 
+.B PKCS#11
+API
+can be used to handle and store cryptographic keys.
+This interface
+specifies how to communicate with cryptographic devices such as HSMs
+(Hardware Security Modules) and smart cards.
+The purpose of these devices
+is, among others,
+to generate cryptographic keys and sign information without
+revealing private-key material to the outside world.
+They are often designed
+to perform well on these specific tasks
+compared to ordinary processes in a normal computer.
+.LP
+.SH ACTIONS
+.TP
+.B \-\-delete\-token
+Delete the token at a given slot.
+Use with
+.BR \-\-token
+or
+.BR \-\-serial .
+Any content in token will be erased.
+.TP
+.B \-\-help\fR, \fB\-h\fR
+Show the help information.
+.TP
+.B \-\-import \fIpath\fR
+Import an object from the given
+.IR path .
+.br
+Use with
+.BR \-\-import-type,
+.BR \-\-slot
+or
+.BR \-\-token
+or
+.BR \-\-serial ,
+.BR \-\-file-pin ,
+.BR \-\-pin ,
+.BR \-\-no\-public\-key ,
+.BR \-\-label ,
+and
+.BR \-\-id .
+.TP
+.B \-\-init-token
+Initialize the token at a given slot, token label or token serial.
+If the token is already initialized then this command
+will reinitialize it, thus erasing all the objects in the token.
+The matching Security Officer (SO) PIN must also
+be provided when doing reinitialization.
+Initialized tokens will be reassigned to another slot (based on
+the token serial number).
+.br
+Use with
+.BR \-\-slot
+or
+.BR \-\-token
+or
+.BR \-\-serial
+or
+.BR \-\-free ,
+.BR \-\-label ,
+.BR \-\-so-pin ,
+and
+.BR \-\-pin .
+.LP
+.TP
+.B \-\-show-slots
+Display all the available slots and their current status.
+.TP
+.B \-\-show-config \fIvar\fR
+Show configuration info, \fIvar\fR may be one of:
+.RS
+.IP default-pkcs11-lib
+print the default PKCS#11 library.
+.RE
+.TP
+.B \-\-version\fR, \fB\-v\fR
+Show the version info.
+.SH OPTIONS
+.TP
+.B \-\-import-type \fItype\fR
+Import object type, \fItype\fR may be one of:
+.RS
+.IP keypair\ [default]
+The file must be in PKCS#8 PEM format.
+.IP aes
+The file must be in binary format.
+.IP cert
+The file must be in X509 PEM format.
+.RE
+.TP
+.B \-\-aes
+Used to tell import to use file as is and import it as AES.
+Deprecated, use \fI--import-type aes\fR instead.
+.TP
+.B \-\-file-pin \fIPIN\fR
+The
+.I PIN
+will be used to decrypt the PKCS#8 file.
+If not given then the PKCS#8 file is assumed to be unencrypted.
+.TP
+.B \-\-force 
+Use this option to override the warnings and force the given action.
+.TP
+.B \-\-free
+Use the first free/uninitialized token.
+.TP
+.B \-\-id \fIhex\fR
+Choose an ID of the key pair.
+The ID is in hexadecimal with a variable length.
+Use with
+.B \-\-force 
+when importing a key pair if the ID already exists.
+.TP
+.B \-\-label \fItext\fR
+Defines the
+.I label
+of the object or the token that will be set.
+.TP
+.B \-\-module \fIpath\fR
+Use another PKCS#11 library than SoftHSM.
+.TP
+.B \-\-no\-public\-key
+Do not import the public key.
+.TP
+.B \-\-pin \fIPIN\fR
+The
+.I PIN
+for the normal user.
+.TP
+.B \-\-serial \fInumber\fR
+Will use the token with a matching serial number.
+.TP
+.B \-\-slot \fInumber\fR
+The slot where the token is located.
+.TP
+.B \-\-so-pin \fIPIN\fR
+The
+.I PIN
+for the Security Officer (SO).
+.TP
+.B \-\-token \fIlabel\fR
+Will use the token with a matching token label.
+.SH EXAMPLES
+.LP
+The token can be initialized using this command:
+.LP
+.RS
+.nf
+softhsm2-util \-\-init-token \-\-slot 1 \-\-label "mytoken"
+.fi
+.RE
+.LP
+A key pair can be imported using the softhsm tool where you specify the path
+to the key file, slot number, label and ID of the new objects, and the
+user PIN.
+The file must be in PKCS#8 format.
+.LP
+.RS
+.nf
+softhsm2-util \-\-import key1.pem \-\-token "mytoken" \-\-label "My key" \\
+.ti +0.7i
+\-\-id A1B2 \-\-pin 123456
+.fi
+(Add, \-\-file-pin
+.IR PIN ,
+if the key file is encrypted.)
+.RE
+.LP
+.SH AUTHORS
+Written by Rickard Bellgrim, Francis Dupont, René Post, and Roland van Rijswijk.
+.LP
+.SH "SEE ALSO"
+.IR softhsm2-keyconv (1),
+.IR softhsm2-migrate (1),
+.IR softhsm2.conf (5)
