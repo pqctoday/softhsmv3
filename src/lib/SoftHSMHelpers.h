@@ -68,11 +68,9 @@ void resetMutexFactoryCallbacks();
 /// Defined in SoftHSM_objects.cpp; used by objects and keygen files.
 CK_RV checkKeyLength(CK_KEY_TYPE keyType, size_t byteLen);
 
-/// Extract CKA_CLASS / CKA_KEY_TYPE / CKA_TOKEN / CKA_PRIVATE from a template.
-/// Defined in SoftHSM_objects.cpp; used by objects, keygen, and kem files.
-
 /// Extract CKA_CLASS / CKA_KEY_TYPE / CKA_TOKEN / CKA_PRIVATE from a
 /// template.  bImplicit=true skips the "class required" check (for unwrap).
+/// Defined in SoftHSM_objects.cpp; used by objects, keygen, and kem files.
 CK_RV extractObjectInformation(CK_ATTRIBUTE_PTR pTemplate,
                                CK_ULONG ulCount,
                                CK_OBJECT_CLASS& objClass,

@@ -40,6 +40,29 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `src/lib/SoftHSM.h` — replaced 12 concrete key-type `#include` headers with
   forward declarations; reduces cascading recompilation when OSSL key headers
   change (Md2)
+- `src/lib/SoftHSM.cpp` (11,786 ln) split into 8 domain-focused translation
+  units; all 132 `SoftHSM::` member functions preserved exactly once across
+  the new files (H1):
+  - `SoftHSM_slots.cpp` (~948 ln) — `C_Initialize` … `C_SetPIN`
+  - `SoftHSM_sessions.cpp` (~232 ln) — `C_OpenSession` … `C_Logout`
+  - `SoftHSM_objects.cpp` (~973 ln) — `C_CreateObject` … `C_FindObjectsFinal` + `CreateObject`
+  - `SoftHSM_cipher.cpp` (~1296 ln) — `SymEncryptInit` … `C_DecryptFinal`
+  - `SoftHSM_digest.cpp` (~330 ln) — `C_DigestInit` … `C_DigestFinal`
+  - `SoftHSM_sign.cpp` (~2297 ln) — `MacSignInit` … `C_DecryptVerifyUpdate`
+  - `SoftHSM_keygen.cpp` (~5237 ln) — `C_GenerateKey` … `MechParamCheckRSAAESKEYWRAP`
+  - `SoftHSM_kem.cpp` (~482 ln) — `C_EncapsulateKey`, `C_DecapsulateKey`
+  - `SoftHSM.cpp` residual (~421 ln) — shared helpers, singleton, RNG, `isMechanismPermitted`
+- `src/lib/SoftHSMHelpers.h` (new) — private header shared across split TUs:
+  named constants (`UNLIMITED_KEY_SIZE`, `MAX_HMAC_KEY_BYTES`, `AES_KEY_BYTES_*`)
+  and cross-TU free-function declarations (`resetMutexFactoryCallbacks`,
+  `checkKeyLength`, `extractObjectInformation`)
+- `src/lib/SoftHSM.cpp` — extracted `acquireSession` / `acquireSessionToken` /
+  `acquireSessionTokenKey` private helpers eliminating the 5-step
+  session/token/key acquisition block repeated ~76× across `C_*Init` functions
+  (H2); net −257 lines (180 added, 437 deleted)
+- `src/lib/SoftHSM.cpp` — extracted `cleanupKeyPair` private helper
+  eliminating the identical 20-line error-recovery block from all 6 key
+  generators (`generateRSA/EC/ED/MLDSA/SLHDSA/MLKEM`) (H5)
 
 ### Fixed
 - **P0 — Integer underflow in `UnwrapMechRsaAesKw`** (`SoftHSM.cpp`): Added
