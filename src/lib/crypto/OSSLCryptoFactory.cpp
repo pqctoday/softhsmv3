@@ -54,6 +54,7 @@
 #include "OSSLSLHDSA.h"
 #include "OSSLMLKEM.h"
 
+#include <mutex>
 #include <string.h>
 #include <openssl/opensslv.h>
 #include <openssl/crypto.h>
@@ -77,11 +78,10 @@ OSSLCryptoFactory::~OSSLCryptoFactory()
 // Return the one-and-only instance
 OSSLCryptoFactory* OSSLCryptoFactory::i()
 {
-	if (!instance.get())
-	{
+	static std::once_flag s_initFlag;
+	std::call_once(s_initFlag, []() {
 		instance.reset(new OSSLCryptoFactory());
-	}
-
+	});
 	return instance.get();
 }
 

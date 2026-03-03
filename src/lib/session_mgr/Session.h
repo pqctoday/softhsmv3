@@ -105,7 +105,7 @@ public:
 	void setMechanism(AsymMech::Type inMechanism);
 	AsymMech::Type getMechanism();
 
-	void setParameters(void* inParam, size_t inParamLen);
+	bool setParameters(void* inParam, size_t inParamLen);
 	void* getParameters(size_t& inParamLen);
 
 	void setReAuthentication(bool inReAuthentication);

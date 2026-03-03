@@ -4447,10 +4447,16 @@ CK_RV SoftHSM::AsymSignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechan
 		session->setReAuthentication(true);
 	}
 
+	if (param != NULL && paramLen > 0 && !session->setParameters(param, paramLen))
+	{
+		asymCrypto->recyclePrivateKey(privateKey);
+		CryptoFactory::i()->recycleAsymmetricAlgorithm(asymCrypto);
+		return CKR_HOST_MEMORY;
+	}
+
 	session->setOpType(SESSION_OP_SIGN);
 	session->setAsymmetricCryptoOp(asymCrypto);
 	session->setMechanism(mechanism);
-	session->setParameters(param, paramLen);
 	session->setAllowMultiPartOp(bAllowMultiPartOp);
 	session->setAllowSinglePartOp(true);
 	session->setPrivateKey(privateKey);
@@ -5488,10 +5494,16 @@ CK_RV SoftHSM::AsymVerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMech
 		return CKR_MECHANISM_INVALID;
 	}
 
+	if (param != NULL && paramLen > 0 && !session->setParameters(param, paramLen))
+	{
+		asymCrypto->recyclePublicKey(publicKey);
+		CryptoFactory::i()->recycleAsymmetricAlgorithm(asymCrypto);
+		return CKR_HOST_MEMORY;
+	}
+
 	session->setOpType(SESSION_OP_VERIFY);
 	session->setAsymmetricCryptoOp(asymCrypto);
 	session->setMechanism(mechanism);
-	session->setParameters(param, paramLen);
 	session->setAllowMultiPartOp(bAllowMultiPartOp);
 	session->setAllowSinglePartOp(true);
 	session->setPublicKey(publicKey);
@@ -5854,17 +5866,18 @@ CK_RV SoftHSM::C_SignMessage(CK_SESSION_HANDLE hSession,
 				mldsaParam.preHash = initParams->preHash;
 				mldsaParam.hashAlg = initParams->hashAlg;
 			}
-			session->setParameters(&mldsaParam, sizeof(mldsaParam));
+			if (!session->setParameters(&mldsaParam, sizeof(mldsaParam)))
+				return CKR_HOST_MEMORY;
 		}
 	}
 
-	// AsymSign expects SESSION_OP_SIGN; temporarily satisfy that check
+	// AsymSign expects SESSION_OP_SIGN; temporarily satisfy that check.
+	// AsymSign calls resetOp() before returning (both size-query and real sign),
+	// so we must unconditionally restore MESSAGE_SIGN on success to keep the
+	// multi-message contract (caller may send further messages under this session).
 	session->setOpType(SESSION_OP_SIGN);
 	CK_RV rv = AsymSign(session, pData, ulDataLen, pSignature, pulSignatureLen);
-
-	// Size-query path (pSignature == NULL): AsymSign returned early without resetOp.
-	// Restore MESSAGE_SIGN so the caller can still perform the actual sign.
-	if (pSignature == NULL_PTR && rv == CKR_OK)
+	if (rv == CKR_OK)
 		session->setOpType(SESSION_OP_MESSAGE_SIGN);
 
 	return rv;
@@ -5934,14 +5947,19 @@ CK_RV SoftHSM::C_VerifyMessage(CK_SESSION_HANDLE hSession,
 				mldsaParam.preHash = initParams->preHash;
 				mldsaParam.hashAlg = initParams->hashAlg;
 			}
-			session->setParameters(&mldsaParam, sizeof(mldsaParam));
+			if (!session->setParameters(&mldsaParam, sizeof(mldsaParam)))
+				return CKR_HOST_MEMORY;
 		}
 	}
 
 	// AsymVerify expects SESSION_OP_VERIFY; temporarily satisfy that check.
-	// AsymVerify always calls resetOp() before returning, so no restore needed.
+	// AsymVerify calls resetOp() before returning, so restore MESSAGE_VERIFY on
+	// success to maintain the multi-message contract.
 	session->setOpType(SESSION_OP_VERIFY);
-	return AsymVerify(session, pData, ulDataLen, pSignature, ulSignatureLen);
+	CK_RV rv = AsymVerify(session, pData, ulDataLen, pSignature, ulSignatureLen);
+	if (rv == CKR_OK)
+		session->setOpType(SESSION_OP_MESSAGE_VERIFY);
+	return rv;
 }
 
 // C_MessageVerifyFinal — end a multi-message verify context (PKCS#11 v3.0 §5.8.12)

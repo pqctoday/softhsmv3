@@ -53,6 +53,7 @@ struct PreHashInfo
 	size_t algIdDerLen;
 	size_t digestLen;
 	bool isXof;
+	mutable EVP_MD* md;  // cached after first EVP_MD_fetch; NULL until first use
 };
 
 // DER-encoded AlgorithmIdentifier for each hash: SEQUENCE { OID [, NULL] }
@@ -92,17 +93,18 @@ static const unsigned char ALGID_SHAKE256[] = {
 static const PreHashInfo* getPreHashInfo(HashAlgo::Type hashAlg)
 {
 	// SHAKE output lengths per FIPS 204: SHAKE128 → 32 bytes, SHAKE256 → 64 bytes
+	// md is lazily populated on first use; NULL here means "not yet fetched".
 	static const PreHashInfo table[] = {
-		{ "SHA2-224",  ALGID_SHA224,    15, 28, false },
-		{ "SHA2-256",  ALGID_SHA256,    15, 32, false },
-		{ "SHA2-384",  ALGID_SHA384,    15, 48, false },
-		{ "SHA2-512",  ALGID_SHA512,    15, 64, false },
-		{ "SHA3-224",  ALGID_SHA3_224,  15, 28, false },
-		{ "SHA3-256",  ALGID_SHA3_256,  15, 32, false },
-		{ "SHA3-384",  ALGID_SHA3_384,  15, 48, false },
-		{ "SHA3-512",  ALGID_SHA3_512,  15, 64, false },
-		{ "SHAKE128",  ALGID_SHAKE128,  13, 32, true  },
-		{ "SHAKE256",  ALGID_SHAKE256,  13, 64, true  },
+		{ "SHA2-224",  ALGID_SHA224,    15, 28, false, NULL },
+		{ "SHA2-256",  ALGID_SHA256,    15, 32, false, NULL },
+		{ "SHA2-384",  ALGID_SHA384,    15, 48, false, NULL },
+		{ "SHA2-512",  ALGID_SHA512,    15, 64, false, NULL },
+		{ "SHA3-224",  ALGID_SHA3_224,  15, 28, false, NULL },
+		{ "SHA3-256",  ALGID_SHA3_256,  15, 32, false, NULL },
+		{ "SHA3-384",  ALGID_SHA3_384,  15, 48, false, NULL },
+		{ "SHA3-512",  ALGID_SHA3_512,  15, 64, false, NULL },
+		{ "SHAKE128",  ALGID_SHAKE128,  13, 32, true,  NULL },
+		{ "SHAKE256",  ALGID_SHAKE256,  13, 64, true,  NULL },
 	};
 
 	switch (hashAlg)
@@ -134,25 +136,29 @@ static bool buildPreHashEncoding(const ByteString& message,
 		return false;
 	}
 
-	// Hash the message with the specified algorithm
+	// Hash the message with the specified algorithm.
+	// Lazily fetch and cache EVP_MD* — the table is static so the pointer lives
+	// for the entire program lifetime and does not need to be freed.
 	unsigned char digest[64]; // max: SHA-512 / SHAKE256 = 64 bytes
-	EVP_MD* md = EVP_MD_fetch(NULL, info->evpName, NULL);
-	if (!md)
+	if (info->md == NULL)
 	{
-		ERROR_MSG("EVP_MD_fetch(%s) failed", info->evpName);
-		return false;
+		info->md = EVP_MD_fetch(NULL, info->evpName, NULL);
+		if (info->md == NULL)
+		{
+			ERROR_MSG("EVP_MD_fetch(%s) failed", info->evpName);
+			return false;
+		}
 	}
 
 	if (info->isXof)
 	{
 		// SHAKE requires EVP_DigestFinalXOF for fixed-length output
 		EVP_MD_CTX* mdctx = EVP_MD_CTX_new();
-		if (!mdctx) { EVP_MD_free(md); return false; }
-		bool ok = EVP_DigestInit_ex(mdctx, md, NULL) &&
+		if (!mdctx) return false;
+		bool ok = EVP_DigestInit_ex(mdctx, info->md, NULL) &&
 		          EVP_DigestUpdate(mdctx, message.const_byte_str(), message.size()) &&
 		          EVP_DigestFinalXOF(mdctx, digest, info->digestLen);
 		EVP_MD_CTX_free(mdctx);
-		EVP_MD_free(md);
 		if (!ok)
 		{
 			ERROR_MSG("SHAKE hash failed for pre-hash ML-DSA");
@@ -163,13 +169,11 @@ static bool buildPreHashEncoding(const ByteString& message,
 	{
 		unsigned int dLen = 0;
 		if (!EVP_Digest(message.const_byte_str(), message.size(),
-		                digest, &dLen, md, NULL))
+		                digest, &dLen, info->md, NULL))
 		{
 			ERROR_MSG("Hash failed for pre-hash ML-DSA (%s)", info->evpName);
-			EVP_MD_free(md);
 			return false;
 		}
-		EVP_MD_free(md);
 	}
 
 	// Build M' = 0x01 || contextLen || context || AlgId_DER || H(M)

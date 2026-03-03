@@ -342,22 +342,23 @@ AsymMech::Type Session::getMechanism()
 	return mechanism;
 }
 
-void Session::setParameters(void* inParam, size_t inParamLen)
+bool Session::setParameters(void* inParam, size_t inParamLen)
 {
-	if (inParam == NULL || inParamLen == 0) return;
+	if (inParam == NULL || inParamLen == 0) return false;
+
+	// Try-and-swap: allocate first so the old param is preserved on OOM.
+	void* newParam = malloc(inParamLen);
+	if (newParam == NULL)
+		return false;
+
+	memcpy(newParam, inParam, inParamLen);
 
 	if (param != NULL)
-	{
 		free(param);
-		paramLen = 0;
-	}
 
-	param = malloc(inParamLen);
-	if (param != NULL)
-	{
-		memcpy(param, inParam, inParamLen);
-		paramLen = inParamLen;
-	}
+	param = newParam;
+	paramLen = inParamLen;
+	return true;
 }
 
 void* Session::getParameters(size_t& inParamLen)
