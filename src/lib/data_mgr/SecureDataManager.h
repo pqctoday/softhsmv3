@@ -143,9 +143,6 @@ private:
 	// Random number generator instance
 	RNG* rng;
 
-	// AES instance
-	SymmetricAlgorithm* aes;
-
 	// Mutex
 	Mutex* dataMgrMutex;
 };

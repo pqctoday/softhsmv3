@@ -54,9 +54,6 @@ void SecureDataManager::initObject()
 	// Get an RNG instance
 	rng = CryptoFactory::i()->getRNG();
 
-	// Get an AES implementation
-	aes = CryptoFactory::i()->getSymmetricAlgorithm(SymAlgo::AES);
-
 	// Initialise masking data
 	mask = new ByteString();
 
@@ -92,9 +89,6 @@ SecureDataManager::SecureDataManager(const ByteString& soPINBlob, const ByteStri
 // Destructor
 SecureDataManager::~SecureDataManager()
 {
-	// Recycle the AES instance
-	CryptoFactory::i()->recycleSymmetricAlgorithm(aes);
-
 	// Clean up the mask
 	delete mask;
 
@@ -124,7 +118,21 @@ bool SecureDataManager::pbeEncryptKey(const ByteString& passphrase, ByteString& 
 	// Generate random IV
 	ByteString IV;
 
-	if (!rng->generateRandom(IV, aes->getBlockSize())) return false;
+	// Create a fresh AES instance per call — the shared this->aes was removed to
+	// prevent cipher state corruption from concurrent pbeEncryptKey/login/encrypt calls.
+	SymmetricAlgorithm* localAes = CryptoFactory::i()->getSymmetricAlgorithm(SymAlgo::AES);
+	if (localAes == NULL)
+	{
+		delete pbeKey;
+		return false;
+	}
+
+	if (!rng->generateRandom(IV, localAes->getBlockSize()))
+	{
+		CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
+		delete pbeKey;
+		return false;
+	}
 
 	// Add the IV
 	encryptedKey += IV;
@@ -132,16 +140,18 @@ bool SecureDataManager::pbeEncryptKey(const ByteString& passphrase, ByteString& 
 	// Encrypt the data
 	ByteString block;
 
-	if (!aes->encryptInit(pbeKey, SymMode::CBC, IV))
+	if (!localAes->encryptInit(pbeKey, SymMode::CBC, IV))
 	{
+		CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 		delete pbeKey;
 
 		return false;
 	}
 
 	// First, add the magic
-	if (!aes->encryptUpdate(magic, block))
+	if (!localAes->encryptUpdate(magic, block))
 	{
+		CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 		delete pbeKey;
 
 		return false;
@@ -157,12 +167,13 @@ bool SecureDataManager::pbeEncryptKey(const ByteString& passphrase, ByteString& 
 
 		unmask(key);
 
-		bool rv = aes->encryptUpdate(key, block);
+		bool rv = localAes->encryptUpdate(key, block);
 
 		remask(key);
 
 		if (!rv)
 		{
+			CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 			delete pbeKey;
 
 			return false;
@@ -172,8 +183,9 @@ bool SecureDataManager::pbeEncryptKey(const ByteString& passphrase, ByteString& 
 	encryptedKey += block;
 
 	// And finalise encryption
-	if (!aes->encryptFinal(block))
+	if (!localAes->encryptFinal(block))
 	{
+		CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 		delete pbeKey;
 
 		return false;
@@ -181,6 +193,7 @@ bool SecureDataManager::pbeEncryptKey(const ByteString& passphrase, ByteString& 
 
 	encryptedKey += block;
 
+	CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 	delete pbeKey;
 
 	return true;
@@ -252,17 +265,22 @@ bool SecureDataManager::login(const ByteString& passphrase, const ByteString& en
 	// First, take the salt from the encrypted key
 	ByteString salt = encryptedKey.substr(0,8);
 
+	// Create a fresh AES instance for this login — avoids sharing cipher state.
+	SymmetricAlgorithm* localAes = CryptoFactory::i()->getSymmetricAlgorithm(SymAlgo::AES);
+	if (localAes == NULL) return false;
+
 	// Then, take the IV from the encrypted key
-	ByteString IV = encryptedKey.substr(8, aes->getBlockSize());
+	ByteString IV = encryptedKey.substr(8, localAes->getBlockSize());
 
 	// Now, take the encrypted data from the encrypted key
-	ByteString encryptedKeyData = encryptedKey.substr(8 + aes->getBlockSize());
+	ByteString encryptedKeyData = encryptedKey.substr(8 + localAes->getBlockSize());
 
 	// Derive the PBE key
 	AESKey* pbeKey = NULL;
 
 	if (!RFC4880::PBEDeriveKey(passphrase, salt, &pbeKey))
 	{
+		CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 		return false;
 	}
 
@@ -271,15 +289,17 @@ bool SecureDataManager::login(const ByteString& passphrase, const ByteString& en
 	ByteString finalBlock;
 
 	// NOTE: The login will fail here if incorrect passphrase is supplied
-	if (!aes->decryptInit(pbeKey, SymMode::CBC, IV) ||
-	    !aes->decryptUpdate(encryptedKeyData, decryptedKeyData) ||
-	    !aes->decryptFinal(finalBlock))
+	if (!localAes->decryptInit(pbeKey, SymMode::CBC, IV) ||
+	    !localAes->decryptUpdate(encryptedKeyData, decryptedKeyData) ||
+	    !localAes->decryptFinal(finalBlock))
 	{
+		CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 		delete pbeKey;
 
 		return false;
 	}
 
+	CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 	delete pbeKey;
 
 	decryptedKeyData += finalBlock;
@@ -323,17 +343,22 @@ bool SecureDataManager::reAuthenticate(const ByteString& passphrase, const ByteS
 	// First, take the salt from the encrypted key
 	ByteString salt = encryptedKey.substr(0,8);
 
+	// Create a fresh AES instance for this re-authentication — avoids sharing cipher state.
+	SymmetricAlgorithm* localAes = CryptoFactory::i()->getSymmetricAlgorithm(SymAlgo::AES);
+	if (localAes == NULL) return false;
+
 	// Then, take the IV from the encrypted key
-	ByteString IV = encryptedKey.substr(8, aes->getBlockSize());
+	ByteString IV = encryptedKey.substr(8, localAes->getBlockSize());
 
 	// Now, take the encrypted data from the encrypted key
-	ByteString encryptedKeyData = encryptedKey.substr(8 + aes->getBlockSize());
+	ByteString encryptedKeyData = encryptedKey.substr(8 + localAes->getBlockSize());
 
 	// Derive the PBE key
 	AESKey* pbeKey = NULL;
 
 	if (!RFC4880::PBEDeriveKey(passphrase, salt, &pbeKey))
 	{
+		CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 		return false;
 	}
 
@@ -342,15 +367,17 @@ bool SecureDataManager::reAuthenticate(const ByteString& passphrase, const ByteS
 	ByteString finalBlock;
 
 	// NOTE: The login will fail here if incorrect passphrase is supplied
-	if (!aes->decryptInit(pbeKey, SymMode::CBC, IV) ||
-	    !aes->decryptUpdate(encryptedKeyData, decryptedKeyData) ||
-	    !aes->decryptFinal(finalBlock))
+	if (!localAes->decryptInit(pbeKey, SymMode::CBC, IV) ||
+	    !localAes->decryptUpdate(encryptedKeyData, decryptedKeyData) ||
+	    !localAes->decryptFinal(finalBlock))
 	{
+		CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 		delete pbeKey;
 
 		return false;
 	}
 
+	CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 	delete pbeKey;
 
 	decryptedKeyData += finalBlock;
@@ -423,27 +450,34 @@ bool SecureDataManager::decrypt(const ByteString& encrypted, ByteString& plainte
 		remask(unmaskedKey);
 	}
 
-	// Take the IV from the input data
-	ByteString IV = encrypted.substr(0, aes->getBlockSize());
+	// Create a fresh AES instance — avoids sharing cipher state between concurrent calls.
+	SymmetricAlgorithm* localAes = CryptoFactory::i()->getSymmetricAlgorithm(SymAlgo::AES);
+	if (localAes == NULL) return false;
 
-	if (IV.size() != aes->getBlockSize())
+	// Take the IV from the input data
+	ByteString IV = encrypted.substr(0, localAes->getBlockSize());
+
+	if (IV.size() != localAes->getBlockSize())
 	{
 		ERROR_MSG("Invalid IV in encrypted data");
+		CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 
 		return false;
 	}
 
 	ByteString finalBlock;
 
-	if (!aes->decryptInit(&theKey, SymMode::CBC, IV) ||
-	    !aes->decryptUpdate(encrypted.substr(aes->getBlockSize()), plaintext) ||
-	    !aes->decryptFinal(finalBlock))
+	if (!localAes->decryptInit(&theKey, SymMode::CBC, IV) ||
+	    !localAes->decryptUpdate(encrypted.substr(localAes->getBlockSize()), plaintext) ||
+	    !localAes->decryptFinal(finalBlock))
 	{
+		CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 		return false;
 	}
 
 	plaintext += finalBlock;
 
+	CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 	return true;
 }
 
@@ -472,17 +506,26 @@ bool SecureDataManager::encrypt(const ByteString& plaintext, ByteString& encrypt
 	// Wipe encrypted data block
 	encrypted.wipe();
 
+	// Create a fresh AES instance — avoids sharing cipher state between concurrent calls.
+	SymmetricAlgorithm* localAes = CryptoFactory::i()->getSymmetricAlgorithm(SymAlgo::AES);
+	if (localAes == NULL) return false;
+
 	// Generate random IV
 	ByteString IV;
 
-	if (!rng->generateRandom(IV, aes->getBlockSize())) return false;
+	if (!rng->generateRandom(IV, localAes->getBlockSize()))
+	{
+		CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
+		return false;
+	}
 
 	ByteString finalBlock;
 
-	if (!aes->encryptInit(&theKey, SymMode::CBC, IV) ||
-	    !aes->encryptUpdate(plaintext, encrypted) ||
-	    !aes->encryptFinal(finalBlock))
+	if (!localAes->encryptInit(&theKey, SymMode::CBC, IV) ||
+	    !localAes->encryptUpdate(plaintext, encrypted) ||
+	    !localAes->encryptFinal(finalBlock))
 	{
+		CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 		return false;
 	}
 
@@ -491,6 +534,7 @@ bool SecureDataManager::encrypt(const ByteString& plaintext, ByteString& encrypt
 	// Add IV to output data
 	encrypted = IV + encrypted;
 
+	CryptoFactory::i()->recycleSymmetricAlgorithm(localAes);
 	return true;
 }
 
