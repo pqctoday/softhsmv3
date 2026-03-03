@@ -1759,28 +1759,36 @@ PKCS_API CK_RV C_DecapsulateKey(CK_SESSION_HANDLE hSession,
 // v3.2 additions — §5.21 Signature-only verification (pre-bound signature)
 // ---------------------------------------------------------------------------
 
-PKCS_API CK_RV C_VerifySignatureInit(CK_SESSION_HANDLE /*hSession*/,
-	CK_MECHANISM_PTR /*pMechanism*/, CK_OBJECT_HANDLE /*hKey*/,
-	CK_BYTE_PTR /*pSignature*/, CK_ULONG /*ulSignatureLen*/)
+PKCS_API CK_RV C_VerifySignatureInit(CK_SESSION_HANDLE hSession,
+	CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey,
+	CK_BYTE_PTR pSignature, CK_ULONG ulSignatureLen)
 {
-	return CKR_FUNCTION_NOT_SUPPORTED;
+	try { return SoftHSM::i()->C_VerifySignatureInit(hSession, pMechanism, hKey, pSignature, ulSignatureLen); }
+	catch (...) { FatalException(); }
+	return CKR_FUNCTION_FAILED;
 }
 
-PKCS_API CK_RV C_VerifySignature(CK_SESSION_HANDLE /*hSession*/,
-	CK_BYTE_PTR /*pData*/, CK_ULONG /*ulDataLen*/)
+PKCS_API CK_RV C_VerifySignature(CK_SESSION_HANDLE hSession,
+	CK_BYTE_PTR pData, CK_ULONG ulDataLen)
 {
-	return CKR_FUNCTION_NOT_SUPPORTED;
+	try { return SoftHSM::i()->C_VerifySignature(hSession, pData, ulDataLen); }
+	catch (...) { FatalException(); }
+	return CKR_FUNCTION_FAILED;
 }
 
-PKCS_API CK_RV C_VerifySignatureUpdate(CK_SESSION_HANDLE /*hSession*/,
-	CK_BYTE_PTR /*pPart*/, CK_ULONG /*ulPartLen*/)
+PKCS_API CK_RV C_VerifySignatureUpdate(CK_SESSION_HANDLE hSession,
+	CK_BYTE_PTR pPart, CK_ULONG ulPartLen)
 {
-	return CKR_FUNCTION_NOT_SUPPORTED;
+	try { return SoftHSM::i()->C_VerifySignatureUpdate(hSession, pPart, ulPartLen); }
+	catch (...) { FatalException(); }
+	return CKR_FUNCTION_FAILED;
 }
 
-PKCS_API CK_RV C_VerifySignatureFinal(CK_SESSION_HANDLE /*hSession*/)
+PKCS_API CK_RV C_VerifySignatureFinal(CK_SESSION_HANDLE hSession)
 {
-	return CKR_FUNCTION_NOT_SUPPORTED;
+	try { return SoftHSM::i()->C_VerifySignatureFinal(hSession); }
+	catch (...) { FatalException(); }
+	return CKR_FUNCTION_FAILED;
 }
 
 // ---------------------------------------------------------------------------

@@ -2533,6 +2533,193 @@ CK_RV SoftHSM::C_VerifyMessageNext(CK_SESSION_HANDLE hSession,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// G4: PKCS#11 v3.2 pre-bound signature verification
+//
+// The signature is bound at init time so that subsequent data calls carry no
+// signature argument.  This is useful for streaming protocols where the
+// signature is received before the data (e.g. signed HTTP responses).
+//
+// Session state machine:
+//   C_VerifySignatureInit(sig) → SESSION_OP_VERIFY_SIGNATURE (0x19)
+//     C_VerifySignature(data)  → 0x0  (one-shot; single-part only)
+//     C_VerifySignatureUpdate(part) + C_VerifySignatureFinal() → 0x0  (multi-part)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Combined heap blob layout stored in session->param by C_VerifySignatureInit:
+//   [ PreBoundVerifySig header | signature bytes | algo-param bytes ]
+struct PreBoundVerifySig {
+	CK_ULONG sigLen;       // length of signature bytes that follow the header
+	CK_ULONG algoParamLen; // length of algo-specific params (may be 0)
+};
+
+// C_VerifySignatureInit — bind a signature to the session before receiving data
+CK_RV SoftHSM::C_VerifySignatureInit(CK_SESSION_HANDLE hSession,
+	CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey,
+	CK_BYTE_PTR pSignature, CK_ULONG ulSignatureLen)
+{
+	if (!isInitialised) return CKR_CRYPTOKI_NOT_INITIALIZED;
+	if (pSignature == NULL_PTR || ulSignatureLen == 0) return CKR_ARGUMENTS_BAD;
+
+	// Reuse AsymVerifyInit to validate the mechanism, load the public key, and
+	// start any multi-part verifier (for mechanisms where bAllowMultiPartOp is
+	// true).  It also stores algo-specific params (ML-DSA / SLH-DSA context)
+	// in session->param.
+	CK_RV rv = AsymVerifyInit(hSession, pMechanism, hKey);
+	if (rv != CKR_OK) return rv;
+
+	// Re-acquire the session to read the algo params left by AsymVerifyInit and
+	// to overwrite session->param with the combined pre-bound blob.
+	auto sessionGuard = handleManager->getSessionShared(hSession);
+	Session* session = sessionGuard.get();
+	if (session == NULL) return CKR_SESSION_HANDLE_INVALID;
+
+	size_t algoParamLen = 0;
+	void* algoParam = session->getParameters(algoParamLen);
+
+	// Build the combined blob: header + signature + algo params.
+	size_t totalLen = sizeof(PreBoundVerifySig) + ulSignatureLen + algoParamLen;
+	std::vector<uint8_t> blob(totalLen);
+	PreBoundVerifySig* hdr = reinterpret_cast<PreBoundVerifySig*>(blob.data());
+	hdr->sigLen      = ulSignatureLen;
+	hdr->algoParamLen = static_cast<CK_ULONG>(algoParamLen);
+	memcpy(blob.data() + sizeof(PreBoundVerifySig), pSignature, ulSignatureLen);
+	if (algoParamLen > 0)
+		memcpy(blob.data() + sizeof(PreBoundVerifySig) + ulSignatureLen, algoParam, algoParamLen);
+
+	if (!session->setParameters(blob.data(), totalLen))
+	{
+		session->resetOp();
+		return CKR_HOST_MEMORY;
+	}
+
+	// Upgrade op type so standard C_Verify* calls are correctly rejected.
+	session->setOpType(SESSION_OP_VERIFY_SIGNATURE);
+	return CKR_OK;
+}
+
+// C_VerifySignature — single-part verify against the pre-bound signature
+CK_RV SoftHSM::C_VerifySignature(CK_SESSION_HANDLE hSession,
+	CK_BYTE_PTR pData, CK_ULONG ulDataLen)
+{
+	if (!isInitialised) return CKR_CRYPTOKI_NOT_INITIALIZED;
+	if (pData == NULL_PTR) return CKR_ARGUMENTS_BAD;
+
+	auto sessionGuard = handleManager->getSessionShared(hSession);
+	Session* session = sessionGuard.get();
+	if (session == NULL) return CKR_SESSION_HANDLE_INVALID;
+	if (session->getOpType() != SESSION_OP_VERIFY_SIGNATURE || !session->getAllowSinglePartOp())
+	{
+		session->resetOp();
+		return CKR_OPERATION_NOT_INITIALIZED;
+	}
+
+	// Extract pre-bound signature and algo params from the combined blob.
+	size_t blobLen = 0;
+	void* blobPtr  = session->getParameters(blobLen);
+	if (blobPtr == NULL || blobLen < sizeof(PreBoundVerifySig))
+	{
+		session->resetOp();
+		return CKR_OPERATION_NOT_INITIALIZED;
+	}
+	PreBoundVerifySig* hdr = reinterpret_cast<PreBoundVerifySig*>(blobPtr);
+	if (sizeof(PreBoundVerifySig) + hdr->sigLen + hdr->algoParamLen > blobLen)
+	{
+		session->resetOp();
+		return CKR_OPERATION_NOT_INITIALIZED;
+	}
+	CK_BYTE_PTR sigBytes = reinterpret_cast<CK_BYTE_PTR>(
+		reinterpret_cast<uint8_t*>(blobPtr) + sizeof(PreBoundVerifySig));
+	void* algoParam = (hdr->algoParamLen > 0) ?
+		reinterpret_cast<void*>(reinterpret_cast<uint8_t*>(blobPtr) + sizeof(PreBoundVerifySig) + hdr->sigLen) :
+		NULL;
+
+	AsymmetricAlgorithm* asymCrypto = session->getAsymmetricCryptoOp();
+	AsymMech::Type mechanism        = session->getMechanism();
+	PublicKey* publicKey            = session->getPublicKey();
+	if (asymCrypto == NULL || publicKey == NULL)
+	{
+		session->resetOp();
+		return CKR_OPERATION_NOT_INITIALIZED;
+	}
+
+	ByteString data(pData, ulDataLen);
+	ByteString signature(sigBytes, hdr->sigLen);
+	bool ok = asymCrypto->verify(publicKey, data, signature, mechanism,
+	                              algoParam, hdr->algoParamLen);
+	session->resetOp();
+	return ok ? CKR_OK : CKR_SIGNATURE_INVALID;
+}
+
+// C_VerifySignatureUpdate — accumulate data for multi-part pre-bound verify
+CK_RV SoftHSM::C_VerifySignatureUpdate(CK_SESSION_HANDLE hSession,
+	CK_BYTE_PTR pPart, CK_ULONG ulPartLen)
+{
+	if (!isInitialised) return CKR_CRYPTOKI_NOT_INITIALIZED;
+
+	auto sessionGuard = handleManager->getSessionShared(hSession);
+	Session* session = sessionGuard.get();
+	if (session == NULL) return CKR_SESSION_HANDLE_INVALID;
+	if (session->getOpType() != SESSION_OP_VERIFY_SIGNATURE || !session->getAllowMultiPartOp())
+	{
+		session->resetOp();
+		return CKR_OPERATION_NOT_INITIALIZED;
+	}
+
+	AsymmetricAlgorithm* asymCrypto = session->getAsymmetricCryptoOp();
+	if (asymCrypto == NULL)
+	{
+		session->resetOp();
+		return CKR_OPERATION_NOT_INITIALIZED;
+	}
+
+	ByteString part(pPart, ulPartLen);
+	if (!asymCrypto->verifyUpdate(part))
+	{
+		session->resetOp();
+		return CKR_FUNCTION_FAILED;
+	}
+	return CKR_OK;
+}
+
+// C_VerifySignatureFinal — finalise multi-part pre-bound verify
+CK_RV SoftHSM::C_VerifySignatureFinal(CK_SESSION_HANDLE hSession)
+{
+	if (!isInitialised) return CKR_CRYPTOKI_NOT_INITIALIZED;
+
+	auto sessionGuard = handleManager->getSessionShared(hSession);
+	Session* session = sessionGuard.get();
+	if (session == NULL) return CKR_SESSION_HANDLE_INVALID;
+	if (session->getOpType() != SESSION_OP_VERIFY_SIGNATURE || !session->getAllowMultiPartOp())
+	{
+		session->resetOp();
+		return CKR_OPERATION_NOT_INITIALIZED;
+	}
+
+	size_t blobLen = 0;
+	void* blobPtr  = session->getParameters(blobLen);
+	if (blobPtr == NULL || blobLen < sizeof(PreBoundVerifySig))
+	{
+		session->resetOp();
+		return CKR_OPERATION_NOT_INITIALIZED;
+	}
+	PreBoundVerifySig* hdr = reinterpret_cast<PreBoundVerifySig*>(blobPtr);
+	CK_BYTE_PTR sigBytes = reinterpret_cast<CK_BYTE_PTR>(
+		reinterpret_cast<uint8_t*>(blobPtr) + sizeof(PreBoundVerifySig));
+
+	AsymmetricAlgorithm* asymCrypto = session->getAsymmetricCryptoOp();
+	if (asymCrypto == NULL)
+	{
+		session->resetOp();
+		return CKR_OPERATION_NOT_INITIALIZED;
+	}
+
+	ByteString signature(sigBytes, hdr->sigLen);
+	bool ok = asymCrypto->verifyFinal(signature);
+	session->resetOp();
+	return ok ? CKR_OK : CKR_SIGNATURE_INVALID;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Initialise a verification operation the allows recovery of the signed data from the signature
 CK_RV SoftHSM::C_VerifyRecoverInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR /*pMechanism*/, CK_OBJECT_HANDLE /*hKey*/)
