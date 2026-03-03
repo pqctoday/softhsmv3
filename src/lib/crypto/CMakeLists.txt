@@ -40,6 +40,11 @@ set(SOURCES
     SLHDSAPrivateKey.cpp
     SLHDSAParameters.cpp
 
+    # ML-KEM (FIPS 203) abstract bases and parameters
+    MLKEMPublicKey.cpp
+    MLKEMPrivateKey.cpp
+    MLKEMParameters.cpp
+
     # OpenSSL EVP implementations
     OSSLAES.cpp
     OSSLCMAC.cpp
@@ -62,6 +67,10 @@ set(SOURCES
     OSSLSLHDSAKeyPair.cpp
     OSSLSLHDSAPrivateKey.cpp
     OSSLSLHDSAPublicKey.cpp
+    OSSLMLKEM.cpp
+    OSSLMLKEMKeyPair.cpp
+    OSSLMLKEMPrivateKey.cpp
+    OSSLMLKEMPublicKey.cpp
     OSSLEVPCMacAlgorithm.cpp
     OSSLEVPHashAlgorithm.cpp
     OSSLEVPMacAlgorithm.cpp

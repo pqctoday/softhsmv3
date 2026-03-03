@@ -55,7 +55,8 @@ struct AsymAlgo
 		GOST,
 		EDDSA,
 		MLDSA,    // ML-DSA (FIPS 204)
-		SLHDSA    // SLH-DSA (FIPS 205)
+		SLHDSA,   // SLH-DSA (FIPS 205)
+		MLKEM     // ML-KEM (FIPS 203)
         };
 };
 

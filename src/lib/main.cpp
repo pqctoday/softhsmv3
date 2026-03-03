@@ -1597,26 +1597,27 @@ PKCS_API CK_RV C_MessageVerifyFinal(CK_SESSION_HANDLE /*hSession*/)
 }
 
 // ---------------------------------------------------------------------------
-// v3.2 additions — §5.20 KEM (Key Encapsulation Mechanism)
-// Stubs only — implemented in Phase 3 (ML-KEM).
+// v3.2 additions — §5.20 KEM (Key Encapsulation Mechanism)  [ML-KEM, Phase 3]
 // ---------------------------------------------------------------------------
 
-PKCS_API CK_RV C_EncapsulateKey(CK_SESSION_HANDLE /*hSession*/,
-	CK_MECHANISM_PTR /*pMechanism*/, CK_OBJECT_HANDLE /*hPublicKey*/,
-	CK_ATTRIBUTE_PTR /*pTemplate*/, CK_ULONG /*ulAttributeCount*/,
-	CK_BYTE_PTR /*pCiphertext*/, CK_ULONG_PTR /*pulCiphertextLen*/,
-	CK_OBJECT_HANDLE_PTR /*phKey*/)
+PKCS_API CK_RV C_EncapsulateKey(CK_SESSION_HANDLE hSession,
+	CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hPublicKey,
+	CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulAttributeCount,
+	CK_BYTE_PTR pCiphertext, CK_ULONG_PTR pulCiphertextLen,
+	CK_OBJECT_HANDLE_PTR phKey)
 {
-	return CKR_FUNCTION_NOT_SUPPORTED;
+	return SoftHSM::i()->C_EncapsulateKey(hSession, pMechanism, hPublicKey,
+		pTemplate, ulAttributeCount, pCiphertext, pulCiphertextLen, phKey);
 }
 
-PKCS_API CK_RV C_DecapsulateKey(CK_SESSION_HANDLE /*hSession*/,
-	CK_MECHANISM_PTR /*pMechanism*/, CK_OBJECT_HANDLE /*hPrivateKey*/,
-	CK_ATTRIBUTE_PTR /*pTemplate*/, CK_ULONG /*ulAttributeCount*/,
-	CK_BYTE_PTR /*pCiphertext*/, CK_ULONG /*ulCiphertextLen*/,
-	CK_OBJECT_HANDLE_PTR /*phKey*/)
+PKCS_API CK_RV C_DecapsulateKey(CK_SESSION_HANDLE hSession,
+	CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hPrivateKey,
+	CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulAttributeCount,
+	CK_BYTE_PTR pCiphertext, CK_ULONG ulCiphertextLen,
+	CK_OBJECT_HANDLE_PTR phKey)
 {
-	return CKR_FUNCTION_NOT_SUPPORTED;
+	return SoftHSM::i()->C_DecapsulateKey(hSession, pMechanism, hPrivateKey,
+		pTemplate, ulAttributeCount, pCiphertext, ulCiphertextLen, phKey);
 }
 
 // ---------------------------------------------------------------------------

@@ -449,6 +449,34 @@ protected:
 	bool initialized;
 };
 
+// ─── ML-KEM (FIPS 203, PKCS#11 v3.2) ────────────────────────────────────────
+
+class P11MLKEMPublicKeyObj : public P11PublicKeyObj
+{
+public:
+	// Constructor
+	P11MLKEMPublicKeyObj();
+
+	// Add attributes
+	virtual bool init(OSObject *inobject);
+
+protected:
+	bool initialized;
+};
+
+class P11MLKEMPrivateKeyObj : public P11PrivateKeyObj
+{
+public:
+	// Constructor
+	P11MLKEMPrivateKeyObj();
+
+	// Add attributes
+	virtual bool init(OSObject *inobject);
+
+protected:
+	bool initialized;
+};
+
 // ─── SLH-DSA (FIPS 205, PKCS#11 v3.2) ───────────────────────────────────────
 
 class P11SLHDSAPublicKeyObj : public P11PublicKeyObj

@@ -1281,4 +1281,42 @@ protected:
 	virtual CK_RV updateAttr(Token *token, bool isPrivate, CK_VOID_PTR pValue, CK_ULONG ulValueLen, int op);
 };
 
+/*****************************************
+ * CKA_ENCAPSULATE  (PKCS#11 v3.2)
+ * Capability flag: key can be used to encapsulate (ML-KEM public key)
+ *****************************************/
+
+class P11AttrEncapsulate : public P11Attribute
+{
+public:
+	// Constructor
+	P11AttrEncapsulate(OSObject* inobject) : P11Attribute(inobject) { type = CKA_ENCAPSULATE; size = sizeof(CK_BBOOL); checks = ck8|ck9; }
+
+protected:
+	// Set the default value of the attribute
+	virtual bool setDefault();
+
+	// Update the value if allowed
+	virtual CK_RV updateAttr(Token *token, bool isPrivate, CK_VOID_PTR pValue, CK_ULONG ulValueLen, int op);
+};
+
+/*****************************************
+ * CKA_DECAPSULATE  (PKCS#11 v3.2)
+ * Capability flag: key can be used to decapsulate (ML-KEM private key)
+ *****************************************/
+
+class P11AttrDecapsulate : public P11Attribute
+{
+public:
+	// Constructor
+	P11AttrDecapsulate(OSObject* inobject) : P11Attribute(inobject) { type = CKA_DECAPSULATE; size = sizeof(CK_BBOOL); checks = ck8|ck9; }
+
+protected:
+	// Set the default value of the attribute
+	virtual bool setDefault();
+
+	// Update the value if allowed
+	virtual CK_RV updateAttr(Token *token, bool isPrivate, CK_VOID_PTR pValue, CK_ULONG ulValueLen, int op);
+};
+
 #endif // !_SOFTHSM_V2_P11ATTRIBUTES_H

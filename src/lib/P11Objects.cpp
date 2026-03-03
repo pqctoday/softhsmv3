@@ -2077,3 +2077,97 @@ bool P11SLHDSAPrivateKeyObj::init(OSObject *inobject)
 	initialized = true;
 	return true;
 }
+
+// ─── ML-KEM Public Key (FIPS 203, PKCS#11 v3.2) ──────────────────────────────
+
+// Constructor
+P11MLKEMPublicKeyObj::P11MLKEMPublicKeyObj()
+{
+	initialized = false;
+}
+
+// Add attributes
+bool P11MLKEMPublicKeyObj::init(OSObject *inobject)
+{
+	if (initialized) return true;
+	if (inobject == NULL) return false;
+
+	if (!inobject->attributeExists(CKA_KEY_TYPE) || inobject->getUnsignedLongValue(CKA_KEY_TYPE, CKK_VENDOR_DEFINED) != CKK_ML_KEM)
+	{
+		OSAttribute setKeyType((unsigned long)CKK_ML_KEM);
+		inobject->setAttribute(CKA_KEY_TYPE, setKeyType);
+	}
+
+	// Create parent
+	if (!P11PublicKeyObj::init(inobject)) return false;
+
+	// Create attributes
+	P11Attribute* attrParamSet    = new P11AttrParameterSet(osobject, P11Attribute::ck3);
+	P11Attribute* attrValue       = new P11AttrValue(osobject, 0);
+	P11Attribute* attrEncapsulate = new P11AttrEncapsulate(osobject);
+
+	// Initialize the attributes
+	if (!attrParamSet->init() || !attrValue->init() || !attrEncapsulate->init())
+	{
+		ERROR_MSG("Could not initialize the attribute");
+		delete attrParamSet;
+		delete attrValue;
+		delete attrEncapsulate;
+		return false;
+	}
+
+	// Add them to the map
+	attributes[attrParamSet->getType()]    = attrParamSet;
+	attributes[attrValue->getType()]       = attrValue;
+	attributes[attrEncapsulate->getType()] = attrEncapsulate;
+
+	initialized = true;
+	return true;
+}
+
+// ─── ML-KEM Private Key (FIPS 203, PKCS#11 v3.2) ─────────────────────────────
+
+// Constructor
+P11MLKEMPrivateKeyObj::P11MLKEMPrivateKeyObj()
+{
+	initialized = false;
+}
+
+// Add attributes
+bool P11MLKEMPrivateKeyObj::init(OSObject *inobject)
+{
+	if (initialized) return true;
+	if (inobject == NULL) return false;
+
+	if (!inobject->attributeExists(CKA_KEY_TYPE) || inobject->getUnsignedLongValue(CKA_KEY_TYPE, CKK_VENDOR_DEFINED) != CKK_ML_KEM)
+	{
+		OSAttribute setKeyType((unsigned long)CKK_ML_KEM);
+		inobject->setAttribute(CKA_KEY_TYPE, setKeyType);
+	}
+
+	// Create parent
+	if (!P11PrivateKeyObj::init(inobject)) return false;
+
+	// Create attributes
+	P11Attribute* attrParamSet    = new P11AttrParameterSet(osobject, P11Attribute::ck4 | P11Attribute::ck6);
+	P11Attribute* attrValue       = new P11AttrValue(osobject, P11Attribute::ck1 | P11Attribute::ck4 | P11Attribute::ck6 | P11Attribute::ck7);
+	P11Attribute* attrDecapsulate = new P11AttrDecapsulate(osobject);
+
+	// Initialize the attributes
+	if (!attrParamSet->init() || !attrValue->init() || !attrDecapsulate->init())
+	{
+		ERROR_MSG("Could not initialize the attribute");
+		delete attrParamSet;
+		delete attrValue;
+		delete attrDecapsulate;
+		return false;
+	}
+
+	// Add them to the map
+	attributes[attrParamSet->getType()]    = attrParamSet;
+	attributes[attrValue->getType()]       = attrValue;
+	attributes[attrDecapsulate->getType()] = attrDecapsulate;
+
+	initialized = true;
+	return true;
+}

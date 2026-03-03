@@ -50,6 +50,8 @@
 #include "MLDSAPrivateKey.h"
 #include "SLHDSAPublicKey.h"
 #include "SLHDSAPrivateKey.h"
+#include "MLKEMPublicKey.h"
+#include "MLKEMPrivateKey.h"
 
 #include <memory>
 
@@ -169,6 +171,30 @@ public:
 	CK_RV C_GetFunctionStatus(CK_SESSION_HANDLE hSession);
 	CK_RV C_CancelFunction(CK_SESSION_HANDLE hSession);
 	CK_RV C_WaitForSlotEvent(CK_FLAGS flags, CK_SLOT_ID_PTR pSlot, CK_VOID_PTR pReserved);
+
+	// PKCS#11 v3.2 — KEM functions (ML-KEM, FIPS 203)
+	CK_RV C_EncapsulateKey
+	(
+		CK_SESSION_HANDLE hSession,
+		CK_MECHANISM_PTR pMechanism,
+		CK_OBJECT_HANDLE hPublicKey,
+		CK_ATTRIBUTE_PTR pTemplate,
+		CK_ULONG ulAttributeCount,
+		CK_BYTE_PTR pCiphertext,
+		CK_ULONG_PTR pulCiphertextLen,
+		CK_OBJECT_HANDLE_PTR phKey
+	);
+	CK_RV C_DecapsulateKey
+	(
+		CK_SESSION_HANDLE hSession,
+		CK_MECHANISM_PTR pMechanism,
+		CK_OBJECT_HANDLE hPrivateKey,
+		CK_ATTRIBUTE_PTR pTemplate,
+		CK_ULONG ulAttributeCount,
+		CK_BYTE_PTR pCiphertext,
+		CK_ULONG ulCiphertextLen,
+		CK_OBJECT_HANDLE_PTR phKey
+	);
 
 private:
 	// Constructor
@@ -357,6 +383,22 @@ private:
 	CK_RV getMLDSAPublicKey(MLDSAPublicKey* publicKey, Token* token, OSObject* key);
 	CK_RV getSLHDSAPrivateKey(SLHDSAPrivateKey* privateKey, Token* token, OSObject* key);
 	CK_RV getSLHDSAPublicKey(SLHDSAPublicKey* publicKey, Token* token, OSObject* key);
+	CK_RV generateMLKEM
+	(
+		CK_SESSION_HANDLE hSession,
+		CK_ATTRIBUTE_PTR pPublicKeyTemplate,
+		CK_ULONG ulPublicKeyAttributeCount,
+		CK_ATTRIBUTE_PTR pPrivateKeyTemplate,
+		CK_ULONG ulPrivateKeyAttributeCount,
+		CK_OBJECT_HANDLE_PTR phPublicKey,
+		CK_OBJECT_HANDLE_PTR phPrivateKey,
+		CK_BBOOL isPublicKeyOnToken,
+		CK_BBOOL isPublicKeyPrivate,
+		CK_BBOOL isPrivateKeyOnToken,
+		CK_BBOOL isPrivateKeyPrivate
+	);
+	CK_RV getMLKEMPrivateKey(MLKEMPrivateKey* privateKey, Token* token, OSObject* key);
+	CK_RV getMLKEMPublicKey(MLKEMPublicKey* publicKey, Token* token, OSObject* key);
 	CK_RV getECDHPublicKey(ECPublicKey* publicKey, ECPrivateKey* privateKey, ByteString& pubData);
 	CK_RV getEDDHPublicKey(EDPublicKey* publicKey, EDPrivateKey* privateKey, ByteString& pubData);
 	CK_RV getSymmetricKey(SymmetricKey* skey, Token* token, OSObject* key);
