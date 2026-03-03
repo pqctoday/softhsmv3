@@ -1,0 +1,45 @@
+# Doxyfile.in — configured by CMake at build time.
+# Generate: cmake --build build --target docs
+# Output:   build/docs/html/index.html
+
+PROJECT_NAME           = "@PACKAGE_NAME@"
+PROJECT_NUMBER         = "@VERSION@"
+PROJECT_BRIEF          = "PKCS#11 v3.2 software HSM with ML-KEM, ML-DSA, and SLH-DSA"
+
+OUTPUT_DIRECTORY       = @CMAKE_BINARY_DIR@/docs
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+GENERATE_MAN           = NO
+HTML_OUTPUT            = html
+
+# Source tree
+INPUT                  = @CMAKE_SOURCE_DIR@/src/lib/pkcs11 \
+                         @CMAKE_SOURCE_DIR@/src/lib/data_mgr \
+                         @CMAKE_SOURCE_DIR@/src/lib/crypto \
+                         @CMAKE_SOURCE_DIR@/src/lib/common \
+                         @CMAKE_SOURCE_DIR@/src/lib/handle_mgr \
+                         @CMAKE_SOURCE_DIR@/src/lib/session_mgr \
+                         @CMAKE_SOURCE_DIR@/src/lib/slot_mgr
+FILE_PATTERNS          = *.h *.cpp
+RECURSIVE              = YES
+EXCLUDE_PATTERNS       = */tests/* */deps/*
+
+# Extraction
+EXTRACT_ALL            = NO
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = NO
+JAVADOC_AUTOBRIEF      = YES
+
+# Appearance
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = NO
+
+# Graph support (requires Graphviz — optional)
+HAVE_DOT               = NO
+CALL_GRAPH             = NO
+CALLER_GRAPH           = NO
+
+# Source browsing
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO

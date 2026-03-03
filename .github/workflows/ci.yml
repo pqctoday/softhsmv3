@@ -37,6 +37,58 @@ jobs:
       - name: Test
         run: cd build && ctest --output-on-failure
 
+  coverage:
+    name: Coverage (Ubuntu 24.04 / OpenSSL 3.3)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            cmake g++ pkg-config \
+            libssl-dev \
+            libcppunit-dev \
+            lcov
+
+      - name: CMake configure (with gcov)
+        run: |
+          cmake -B build-cov \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTS=ON \
+            -DCMAKE_CXX_FLAGS="--coverage -fprofile-arcs -ftest-coverage" \
+            -DCMAKE_C_FLAGS="--coverage -fprofile-arcs -ftest-coverage" \
+            -DCMAKE_EXE_LINKER_FLAGS="--coverage"
+
+      - name: Build
+        run: cmake --build build-cov -j$(nproc)
+
+      - name: Test
+        run: cd build-cov && ctest --output-on-failure
+
+      - name: Capture coverage
+        run: |
+          lcov --capture \
+            --directory build-cov \
+            --output-file coverage.info \
+            --ignore-errors mismatch
+          lcov --remove coverage.info \
+            '/usr/*' \
+            '*/tests/*' \
+            '*/deps/*' \
+            '*/CppUnit*' \
+            --output-file coverage.info
+          lcov --list coverage.info
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.info
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
       - name: Check for deprecated OpenSSL API usage
         run: |
           echo "=== Scanning for removed/deprecated OpenSSL 1.x APIs ==="

@@ -50,54 +50,116 @@
 #include "SymmetricAlgorithm.h"
 #include "MutexFactory.h"
 
+/**
+ * @brief Manages the per-token master key used to protect sensitive PKCS#11 object attributes.
+ *
+ * Every Token instance owns one SecureDataManager.  It holds a 256-bit AES
+ * master key in masked form (XOR'd against a heap-allocated random mask).
+ * The master key is wrapped twice — once under a PBKDF2-SHA256 key derived
+ * from the SO PIN and once from the User PIN — and stored as opaque blobs that
+ * are persisted on-disk with the token.
+ *
+ * Thread safety: encrypt/decrypt/login/logout are serialised by @c dataMgrMutex.
+ * Each operation creates a fresh per-call AES instance so no crypto state is shared.
+ */
 class SecureDataManager
 {
 public:
-	// Constructors
-
-	// Constructs a new SecureDataManager for a blank token; actual
-	// initialisation is done by setting the SO PIN
+	/**
+	 * @brief Construct a blank SecureDataManager for a newly created token.
+	 *
+	 * Call setSOPIN() to initialise the first key blob before the token is usable.
+	 */
 	SecureDataManager();
 
-	// Constructs a SecureDataManager using the specified SO PIN and user PIN
+	/**
+	 * @brief Construct a SecureDataManager by loading existing PIN blobs from storage.
+	 * @param soPINBlob    Encrypted master key wrapped under the SO PIN.
+	 * @param userPINBlob  Encrypted master key wrapped under the User PIN.
+	 */
 	SecureDataManager(const ByteString& soPINBlob, const ByteString& userPINBlob);
 
-	// Destructor
+	/** @brief Destructor — securely wipes the masked key and mask from memory. */
 	virtual ~SecureDataManager();
 
-	// Set the SO PIN (requires either a blank SecureDataManager or the
-	// SO to have logged in previously)
+	/**
+	 * @brief Set (or change) the SO PIN and re-wrap the master key.
+	 *
+	 * Requires either a blank SecureDataManager (first-time init) or that the SO
+	 * has already logged in via loginSO().
+	 * @param soPIN  Raw SO PIN bytes.
+	 * @return true on success; false if not authorised or crypto failure.
+	 */
 	bool setSOPIN(const ByteString& soPIN);
 
-	// Set the user PIN (requires either the SO or the user to have logged
-	// in previously)
+	/**
+	 * @brief Set (or change) the User PIN and re-wrap the master key.
+	 *
+	 * Requires either the SO or the User to be currently logged in.
+	 * @param userPIN  Raw User PIN bytes.
+	 * @return true on success; false if not authorised or crypto failure.
+	 */
 	bool setUserPIN(const ByteString& userPIN);
 
-	// Log in using the SO PIN
+	/**
+	 * @brief Authenticate as Security Officer and unlock the master key.
+	 * @param soPIN  Raw SO PIN bytes supplied by the caller.
+	 * @return true if the PIN is correct and the master key was unwrapped.
+	 */
 	bool loginSO(const ByteString& soPIN);
+	/** @return true if the SO is currently logged in. */
 	bool isSOLoggedIn();
 
-	// Log in using the user PIN
+	/**
+	 * @brief Authenticate as the normal User and unlock the master key.
+	 * @param userPIN  Raw User PIN bytes supplied by the caller.
+	 * @return true if the PIN is correct and the master key was unwrapped.
+	 */
 	bool loginUser(const ByteString& userPIN);
+	/** @return true if the User is currently logged in. */
 	bool isUserLoggedIn();
 
-	// Re-authentication
+	/**
+	 * @brief Verify SO PIN without changing login state (used before PIN change).
+	 * @param soPIN  PIN to check.
+	 * @return true if the PIN matches the stored SO blob.
+	 */
 	bool reAuthenticateSO(const ByteString& soPIN);
+
+	/**
+	 * @brief Verify User PIN without changing login state (used before PIN change).
+	 * @param userPIN  PIN to check.
+	 * @return true if the PIN matches the stored User blob.
+	 */
 	bool reAuthenticateUser(const ByteString& userPIN);
 
-	// Log out
+	/** @brief Log out all users and re-mask the master key. */
 	void logout();
 
-	// Decrypt the supplied data
+	/**
+	 * @brief Decrypt an attribute value previously encrypted by encrypt().
+	 *
+	 * The master key must be unlocked (SO or User logged in).
+	 * @param encrypted  Cipher-text blob (IV prepended by encrypt()).
+	 * @param plaintext  Output buffer receiving the recovered plain-text.
+	 * @return true on success.
+	 */
 	bool decrypt(const ByteString& encrypted, ByteString& plaintext);
 
-	// Encrypt the supplied data
+	/**
+	 * @brief Encrypt an attribute value using the master key.
+	 *
+	 * The master key must be unlocked (SO or User logged in).
+	 * @param plaintext  Data to protect.
+	 * @param encrypted  Output buffer receiving IV + cipher-text.
+	 * @return true on success.
+	 */
 	bool encrypt(const ByteString& plaintext, ByteString& encrypted);
 
-	// Returns the key blob for the SO PIN
+	/** @return The SO PIN-encrypted master key blob for persistent storage. */
 	ByteString getSOPINBlob();
 
-	// Returns the key blob for the user PIN
+	/** @return The User PIN-encrypted master key blob for persistent storage. */
 	ByteString getUserPINBlob();
 
 private:

@@ -3735,6 +3735,79 @@ static bool isMacMechanism(CK_MECHANISM_PTR pMechanism)
 	}
 }
 
+// ---------------------------------------------------------------------------
+// MAC mechanism lookup table (H3 refactor)
+//
+// Maps each supported MAC mechanism to its required key type, whether
+// CKK_GENERIC_SECRET is an acceptable alternative (HMAC), the PKCS#11
+// minimum output length in bytes, and the internal MacAlgo identifier.
+// Adding a new MAC mechanism requires one table row and no switch edits.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct MacMechInfo {
+	CK_MECHANISM_TYPE mech;
+	CK_KEY_TYPE       specificKeyType; ///< e.g. CKK_SHA256_HMAC; CKK_AES for CMAC
+	bool              allowGenericSecret; ///< HMAC: true; CMAC: false
+	size_t            minKeyBytes;     ///< minimum key length (0 = no PKCS#11 minimum)
+	MacAlgo::Type     algo;
+};
+
+static const MacMechInfo kMacMechTable[] = {
+	{ CKM_SHA_1_HMAC,    CKK_SHA_1_HMAC,    true,  20, MacAlgo::HMAC_SHA1     },
+	{ CKM_SHA224_HMAC,   CKK_SHA224_HMAC,   true,  28, MacAlgo::HMAC_SHA224   },
+	{ CKM_SHA256_HMAC,   CKK_SHA256_HMAC,   true,  32, MacAlgo::HMAC_SHA256   },
+	{ CKM_SHA384_HMAC,   CKK_SHA384_HMAC,   true,  48, MacAlgo::HMAC_SHA384   },
+	{ CKM_SHA512_HMAC,   CKK_SHA512_HMAC,   true,  64, MacAlgo::HMAC_SHA512   },
+	{ CKM_SHA3_224_HMAC, CKK_SHA3_224_HMAC, true,  28, MacAlgo::HMAC_SHA3_224 },
+	{ CKM_SHA3_256_HMAC, CKK_SHA3_256_HMAC, true,  32, MacAlgo::HMAC_SHA3_256 },
+	{ CKM_SHA3_384_HMAC, CKK_SHA3_384_HMAC, true,  48, MacAlgo::HMAC_SHA3_384 },
+	{ CKM_SHA3_512_HMAC, CKK_SHA3_512_HMAC, true,  64, MacAlgo::HMAC_SHA3_512 },
+	{ CKM_AES_CMAC,      CKK_AES,           false,  0, MacAlgo::CMAC_AES      },
+};
+
+/**
+ * @brief Resolve a MAC mechanism to its algorithm and key-type requirements.
+ *
+ * Handles the WITH_FIPS compile-time exclusion of CKM_MD5_HMAC and validates
+ * that @p keyType is consistent with the chosen mechanism.
+ *
+ * @param mech     Mechanism identifier from the caller's CK_MECHANISM.
+ * @param keyType  CKA_KEY_TYPE of the supplied key object.
+ * @param algo     [out] Resolved MacAlgo identifier.
+ * @param minKeyBytes [out] Minimum acceptable key byte length.
+ * @return CKR_OK, CKR_MECHANISM_INVALID, or CKR_KEY_TYPE_INCONSISTENT.
+ */
+static CK_RV resolveMacMech(CK_MECHANISM_TYPE mech, CK_KEY_TYPE keyType,
+                             MacAlgo::Type& algo, size_t& minKeyBytes)
+{
+#ifndef WITH_FIPS
+	if (mech == CKM_MD5_HMAC) {
+		if (keyType != CKK_GENERIC_SECRET && keyType != CKK_MD5_HMAC)
+			return CKR_KEY_TYPE_INCONSISTENT;
+		algo        = MacAlgo::HMAC_MD5;
+		minKeyBytes = 16;
+		return CKR_OK;
+	}
+#endif
+	for (const MacMechInfo& e : kMacMechTable) {
+		if (e.mech != mech) continue;
+		if (e.allowGenericSecret) {
+			if (keyType != CKK_GENERIC_SECRET && keyType != e.specificKeyType)
+				return CKR_KEY_TYPE_INCONSISTENT;
+		} else {
+			if (keyType != e.specificKeyType)
+				return CKR_KEY_TYPE_INCONSISTENT;
+		}
+		algo        = e.algo;
+		minKeyBytes = e.minKeyBytes;
+		return CKR_OK;
+	}
+	return CKR_MECHANISM_INVALID;
+}
+
+} // anonymous namespace
+
 // MacAlgorithm version of C_SignInit
 CK_RV SoftHSM::MacSignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey)
 {
@@ -3782,82 +3855,12 @@ CK_RV SoftHSM::MacSignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechani
 	// Get key info
 	CK_KEY_TYPE keyType = key->getUnsignedLongValue(CKA_KEY_TYPE, CKK_VENDOR_DEFINED);
 
-	// Get the MAC algorithm matching the mechanism
-	// Also check mechanism constraints
+	// Resolve mechanism → algorithm + key-type check via lookup table (H3).
 	MacAlgo::Type algo = MacAlgo::Unknown;
-	size_t bb = 8;
 	size_t minSize = 0;
-	switch(pMechanism->mechanism) {
-#ifndef WITH_FIPS
-		case CKM_MD5_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_MD5_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 16;
-			algo = MacAlgo::HMAC_MD5;
-			break;
-#endif
-		case CKM_SHA_1_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA_1_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 20;
-			algo = MacAlgo::HMAC_SHA1;
-			break;
-		case CKM_SHA224_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA224_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 28;
-			algo = MacAlgo::HMAC_SHA224;
-			break;
-		case CKM_SHA256_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA256_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 32;
-			algo = MacAlgo::HMAC_SHA256;
-			break;
-		case CKM_SHA384_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA384_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 48;
-			algo = MacAlgo::HMAC_SHA384;
-			break;
-		case CKM_SHA512_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA512_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 64;
-			algo = MacAlgo::HMAC_SHA512;
-			break;
-		case CKM_SHA3_224_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA3_224_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 28;
-			algo = MacAlgo::HMAC_SHA3_224;
-			break;
-		case CKM_SHA3_256_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA3_256_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 32;
-			algo = MacAlgo::HMAC_SHA3_256;
-			break;
-		case CKM_SHA3_384_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA3_384_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 48;
-			algo = MacAlgo::HMAC_SHA3_384;
-			break;
-		case CKM_SHA3_512_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA3_512_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 64;
-			algo = MacAlgo::HMAC_SHA3_512;
-			break;
-		case CKM_AES_CMAC:
-			if (keyType != CKK_AES)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			algo = MacAlgo::CMAC_AES;
-			break;
-		default:
-			return CKR_MECHANISM_INVALID;
-	}
+	CK_RV mechRv = resolveMacMech(pMechanism->mechanism, keyType, algo, minSize);
+	if (mechRv != CKR_OK) return mechRv;
+
 	MacAlgorithm* mac = CryptoFactory::i()->getMacAlgorithm(algo);
 	if (mac == NULL) return CKR_MECHANISM_INVALID;
 
@@ -3870,10 +3873,9 @@ CK_RV SoftHSM::MacSignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechani
 		return CKR_GENERAL_ERROR;
 	}
 
-	// Adjust key bit length
-	privkey->setBitLen(privkey->getKeyBits().size() * bb);
+	// Key must have at least 1 byte; RFC 2104 permits any positive key size for HMAC
+	privkey->setBitLen(privkey->getKeyBits().size() * 8);
 
-	// Key must have at least 1 byte; RFC 2104 permits any key size for HMAC
 	if (privkey->getBitLen() == 0)
 	{
 		mac->recycleKey(privkey);
@@ -4963,82 +4965,12 @@ CK_RV SoftHSM::MacVerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMecha
 	// Get key info
 	CK_KEY_TYPE keyType = key->getUnsignedLongValue(CKA_KEY_TYPE, CKK_VENDOR_DEFINED);
 
-	// Get the MAC algorithm matching the mechanism
-	// Also check mechanism constraints
+	// Resolve mechanism → algorithm + key-type check via lookup table (H3).
 	MacAlgo::Type algo = MacAlgo::Unknown;
-	size_t bb = 8;
 	size_t minSize = 0;
-	switch(pMechanism->mechanism) {
-#ifndef WITH_FIPS
-		case CKM_MD5_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_MD5_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 16;
-			algo = MacAlgo::HMAC_MD5;
-			break;
-#endif
-		case CKM_SHA_1_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA_1_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 20;
-			algo = MacAlgo::HMAC_SHA1;
-			break;
-		case CKM_SHA224_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA224_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 28;
-			algo = MacAlgo::HMAC_SHA224;
-			break;
-		case CKM_SHA256_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA256_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 32;
-			algo = MacAlgo::HMAC_SHA256;
-			break;
-		case CKM_SHA384_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA384_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 48;
-			algo = MacAlgo::HMAC_SHA384;
-			break;
-		case CKM_SHA512_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA512_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 64;
-			algo = MacAlgo::HMAC_SHA512;
-			break;
-		case CKM_SHA3_224_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA3_224_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 28;
-			algo = MacAlgo::HMAC_SHA3_224;
-			break;
-		case CKM_SHA3_256_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA3_256_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 32;
-			algo = MacAlgo::HMAC_SHA3_256;
-			break;
-		case CKM_SHA3_384_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA3_384_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 48;
-			algo = MacAlgo::HMAC_SHA3_384;
-			break;
-		case CKM_SHA3_512_HMAC:
-			if (keyType != CKK_GENERIC_SECRET && keyType != CKK_SHA3_512_HMAC)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			minSize = 64;
-			algo = MacAlgo::HMAC_SHA3_512;
-			break;
-		case CKM_AES_CMAC:
-			if (keyType != CKK_AES)
-				return CKR_KEY_TYPE_INCONSISTENT;
-			algo = MacAlgo::CMAC_AES;
-			break;
-		default:
-			return CKR_MECHANISM_INVALID;
-	}
+	CK_RV mechRv = resolveMacMech(pMechanism->mechanism, keyType, algo, minSize);
+	if (mechRv != CKR_OK) return mechRv;
+
 	MacAlgorithm* mac = CryptoFactory::i()->getMacAlgorithm(algo);
 	if (mac == NULL) return CKR_MECHANISM_INVALID;
 
@@ -5051,11 +4983,10 @@ CK_RV SoftHSM::MacVerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMecha
 		return CKR_GENERAL_ERROR;
 	}
 
-	// Adjust key bit length
-	pubkey->setBitLen(pubkey->getKeyBits().size() * bb);
-
 	// Check key size
-	if (pubkey->getBitLen() < (minSize*8))
+	pubkey->setBitLen(pubkey->getKeyBits().size() * 8);
+
+	if (pubkey->getBitLen() < (minSize * 8))
 	{
 		mac->recycleKey(pubkey);
 		CryptoFactory::i()->recycleMacAlgorithm(mac);

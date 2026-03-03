@@ -121,6 +121,25 @@ install(FILES ${CMAKE_BINARY_DIR}/softhsmv3.pc
         DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
         )
 
+# ---- API Documentation (Doxygen, optional — fixes OSS gap M5) ---------------
+find_package(Doxygen OPTIONAL_COMPONENTS dot)
+if(DOXYGEN_FOUND)
+    configure_file(
+        ${CMAKE_SOURCE_DIR}/Doxyfile.in
+        ${CMAKE_BINARY_DIR}/Doxyfile
+        @ONLY
+    )
+    add_custom_target(docs
+        COMMAND ${DOXYGEN_EXECUTABLE} ${CMAKE_BINARY_DIR}/Doxyfile
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMENT "Generating API documentation (output: ${CMAKE_BINARY_DIR}/docs/html/index.html)"
+        VERBATIM
+    )
+    message(STATUS "Doxygen ${DOXYGEN_VERSION}: run 'cmake --build build --target docs' to generate API docs")
+else()
+    message(STATUS "Doxygen not found — 'cmake --build build --target docs' is unavailable")
+endif()
+
 # ---- Subdirectories ---------------------------------------------------------
 
 if(EMSCRIPTEN)
