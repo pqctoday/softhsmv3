@@ -1806,7 +1806,11 @@ CK_RV SoftHSM::C_UnwrapKeyAuthenticated
 		{ CKA_KEY_TYPE, &keyType,   sizeof(keyType)    }
 	};
 	CK_ULONG secretAttribsCount = 4;
-	if (ulAttributeCount > (maxAttribs - secretAttribsCount)) return CKR_TEMPLATE_INCONSISTENT;
+	if (ulAttributeCount > (maxAttribs - secretAttribsCount))
+	{
+		keydata.wipe(); // plaintext key material must be zeroed before early return
+		return CKR_TEMPLATE_INCONSISTENT;
+	}
 	for (CK_ULONG i = 0; i < ulAttributeCount; ++i)
 	{
 		switch (pTemplate[i].type)

@@ -1408,6 +1408,7 @@ static CK_RV aesgcmEncryptOneShot(
 	*pulCipherLen = (CK_ULONG)cipherOut.size();
 	if (pTag) memcpy(pTag, finalPart.byte_str(), tagBytes);
 
+	cipher->recycleKey(symKey);
 	CryptoFactory::i()->recycleSymmetricAlgorithm(cipher);
 	return CKR_OK;
 }
@@ -1469,6 +1470,7 @@ static CK_RV aesgcmDecryptOneShot(
 	memcpy(pPlain, plainOut.byte_str(), plainOut.size());
 	*pulPlainLen = (CK_ULONG)plainOut.size();
 
+	cipher->recycleKey(symKey);
 	CryptoFactory::i()->recycleSymmetricAlgorithm(cipher);
 	return CKR_OK;
 }
@@ -1872,6 +1874,12 @@ CK_RV SoftHSM::C_DecryptMessageNext(CK_SESSION_HANDLE hSession,
 				session->resetOp();
 				return CKR_ENCRYPTED_DATA_INVALID;
 			}
+			// Guard against CK_ULONG overflow (relevant on 32-bit / WASM targets).
+			// GCM messages exceeding ~4 GB are rejected by OpenSSL anyway, but be explicit.
+			if (ulCiphertextPartLen > (~(CK_ULONG)0) - ctx->accumCipherLen) {
+				session->resetOp();
+				return CKR_DATA_LEN_RANGE;
+			}
 			ctx->accumCipherLen += (CK_ULONG)ulCiphertextPartLen;
 		}
 		*pulPlaintextPartLen = 0;
@@ -1890,6 +1898,10 @@ CK_RV SoftHSM::C_DecryptMessageNext(CK_SESSION_HANDLE hSession,
 	// This is known before running decryptFinal, so the buffer check can precede the crypto,
 	// leaving the cipher context intact for a retry if the buffer is too small.
 	CK_ULONG thisCipherLen = (pCiphertextPart != NULL_PTR) ? (CK_ULONG)ulCiphertextPartLen : 0;
+	if (thisCipherLen > (~(CK_ULONG)0) - ctx->accumCipherLen) {
+		session->resetOp();
+		return CKR_DATA_LEN_RANGE;
+	}
 	CK_ULONG totalPlain = ctx->accumCipherLen + thisCipherLen;
 
 	if (pPlaintextPart == NULL_PTR) {
@@ -1929,7 +1941,9 @@ CK_RV SoftHSM::C_DecryptMessageNext(CK_SESSION_HANDLE hSession,
 	if (plainLen > 0) memcpy(pPlaintextPart, plainOut.byte_str(), plainLen);
 	*pulPlaintextPartLen = plainLen;
 
-	// Tear down streaming cipher; GcmMsgCtx in param survives for the next message
+	// Tear down streaming cipher; GcmMsgCtx in param survives for the next message.
+	// Reset accumCipherLen so Begin→Next→End for the next message starts from zero.
+	ctx->accumCipherLen = 0;
 	session->setSymmetricCryptoOp(NULL);
 	session->setOpType(SESSION_OP_MESSAGE_DECRYPT);
 	return CKR_OK;
