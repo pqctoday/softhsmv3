@@ -1,0 +1,5 @@
+# deps/ holds build artifacts that are not committed
+# Build scripts generate these:
+#   scripts/build-openssl-wasm.sh → openssl-src/ + openssl-wasm/
+openssl-src/
+openssl-wasm/

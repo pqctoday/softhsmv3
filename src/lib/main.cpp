@@ -40,6 +40,7 @@
 #include "fatal.h"
 #include "cryptoki.h"
 #include "SoftHSM.h"
+#include "MutexFactory.h"
 #include <cstring>
 
 #if defined(__GNUC__) && \
@@ -357,6 +358,10 @@ static const CK_ULONG interfaceCount = 3;
 // PKCS #11 initialisation function
 PKCS_API CK_RV C_Initialize(CK_VOID_PTR pInitArgs)
 {
+#ifdef __EMSCRIPTEN__
+	// WASM is single-threaded — disable mutex overhead before first C_Initialize
+	MutexFactory::i()->disable();
+#endif
 	try
 	{
 		return SoftHSM::i()->C_Initialize(pInitArgs);

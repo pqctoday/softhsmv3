@@ -110,4 +110,10 @@ include_directories(${CMAKE_BINARY_DIR})
 
 # ---- Subdirectories ---------------------------------------------------------
 
-add_subdirectory(src)
+if(EMSCRIPTEN)
+    # WASM build: compile only the PKCS#11 library; skip utility binaries
+    # (softhsm2-util, softhsm2-keyconv, softhsm2-dump require POSIX CLI)
+    add_subdirectory(src/lib)
+else()
+    add_subdirectory(src)
+endif()

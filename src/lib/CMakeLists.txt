@@ -81,6 +81,70 @@ generate_export_header(${PROJECT_NAME})
 target_compile_options(${PROJECT_NAME} PRIVATE ${COMPILE_OPTIONS})
 
 ###############################################################################
+# Emscripten WASM Target
+# Produces softhsmv3.js + softhsmv3.wasm (MODULARIZE=1, factory: createSoftHSMModule)
+###############################################################################
+if(EMSCRIPTEN)
+    set_target_properties(${PROJECT_NAME} PROPERTIES SUFFIX ".js")
+
+    # Complete list of all PKCS#11 v2.0 / v3.0 / v3.2 C_* functions (71 total)
+    set(PKCS11_EXPORTS
+        "_C_Initialize,_C_Finalize,_C_GetInfo,_C_GetFunctionList,"
+        "_C_GetSlotList,_C_GetSlotInfo,_C_GetTokenInfo,"
+        "_C_GetMechanismList,_C_GetMechanismInfo,"
+        "_C_InitToken,_C_InitPIN,_C_SetPIN,"
+        "_C_OpenSession,_C_CloseSession,_C_CloseAllSessions,"
+        "_C_GetSessionInfo,_C_GetOperationState,_C_SetOperationState,"
+        "_C_Login,_C_Logout,"
+        "_C_CreateObject,_C_CopyObject,_C_DestroyObject,_C_GetObjectSize,"
+        "_C_GetAttributeValue,_C_SetAttributeValue,"
+        "_C_FindObjectsInit,_C_FindObjects,_C_FindObjectsFinal,"
+        "_C_EncryptInit,_C_Encrypt,_C_EncryptUpdate,_C_EncryptFinal,"
+        "_C_DecryptInit,_C_Decrypt,_C_DecryptUpdate,_C_DecryptFinal,"
+        "_C_DigestInit,_C_Digest,_C_DigestUpdate,_C_DigestKey,_C_DigestFinal,"
+        "_C_SignInit,_C_Sign,_C_SignUpdate,_C_SignFinal,"
+        "_C_SignRecoverInit,_C_SignRecover,"
+        "_C_VerifyInit,_C_Verify,_C_VerifyUpdate,_C_VerifyFinal,"
+        "_C_VerifyRecoverInit,_C_VerifyRecover,"
+        "_C_DigestEncryptUpdate,_C_DecryptDigestUpdate,"
+        "_C_SignEncryptUpdate,_C_DecryptVerifyUpdate,"
+        "_C_GenerateKey,_C_GenerateKeyPair,"
+        "_C_WrapKey,_C_UnwrapKey,_C_DeriveKey,"
+        "_C_SeedRandom,_C_GenerateRandom,"
+        "_C_GetFunctionStatus,_C_CancelFunction,_C_WaitForSlotEvent,"
+        "_C_GetInterfaceList,_C_GetInterface,_C_LoginUser,_C_SessionCancel,"
+        "_C_MessageEncryptInit,_C_EncryptMessage,"
+        "_C_EncryptMessageBegin,_C_EncryptMessageNext,_C_MessageEncryptFinal,"
+        "_C_MessageDecryptInit,_C_DecryptMessage,"
+        "_C_DecryptMessageBegin,_C_DecryptMessageNext,_C_MessageDecryptFinal,"
+        "_C_MessageSignInit,_C_SignMessage,"
+        "_C_SignMessageBegin,_C_SignMessageNext,_C_MessageSignFinal,"
+        "_C_MessageVerifyInit,_C_VerifyMessage,"
+        "_C_VerifyMessageBegin,_C_VerifyMessageNext,_C_MessageVerifyFinal,"
+        "_C_EncapsulateKey,_C_DecapsulateKey,"
+        "_C_VerifySignatureInit,_C_VerifySignature,"
+        "_C_VerifySignatureUpdate,_C_VerifySignatureFinal,"
+        "_C_GetSessionValidationFlags,"
+        "_C_AsyncComplete,_C_AsyncGetID,_C_AsyncJoin,"
+        "_C_WrapKeyAuthenticated,_C_UnwrapKeyAuthenticated,"
+        "_malloc,_free"
+    )
+    string(CONCAT PKCS11_EXPORTS_STR ${PKCS11_EXPORTS})
+
+    target_link_options(${PROJECT_NAME} PRIVATE
+        "-sMODULARIZE=1"
+        "-sEXPORT_NAME=createSoftHSMModule"
+        "-sEXPORTED_FUNCTIONS=[${PKCS11_EXPORTS_STR}]"
+        "-sEXPORTED_RUNTIME_METHODS=['FS','getValue','setValue','UTF8ToString','stringToUTF8','lengthBytesUTF8','HEAPU8','HEAP32']"
+        "-sALLOW_MEMORY_GROWTH=1"
+        "-sINITIAL_MEMORY=67108864"
+        "-sFORCE_FILESYSTEM=1"
+        "-sENVIRONMENT=node,web"
+        "--pre-js" "${CMAKE_SOURCE_DIR}/src/wasm/softhsm_pre.js"
+    )
+endif()
+
+###############################################################################
 # Tests
 ###############################################################################
 if(BUILD_TESTS)

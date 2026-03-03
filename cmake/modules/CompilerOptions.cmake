@@ -131,8 +131,11 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
 endif()
 
 # Check if -ldl exists (equivalent of acx_dlopen.m4)
-check_library_exists(dl dlopen "" HAVE_DLOPEN)
-check_function_exists(LoadLibrary HAVE_LOADLIBRARY)
+# dlopen is not available in WASM (no dynamic loading)
+if(NOT EMSCRIPTEN)
+    check_library_exists(dl dlopen "" HAVE_DLOPEN)
+    check_function_exists(LoadLibrary HAVE_LOADLIBRARY)
+endif()
 
 # acx_libtool.m4
 check_include_files(dlfcn.h HAVE_DLFCN_H)
@@ -276,6 +279,21 @@ elseif(WITH_CRYPTO_BACKEND STREQUAL "openssl")
     message(STATUS "OpenSSL: Includes: ${CRYPTO_INCLUDES}")
     message(STATUS "OpenSSL: Libs: ${CRYPTO_LIBS}")
 
+    if(EMSCRIPTEN)
+        # Skip try_run() / check_library_exists() feature tests under Emscripten
+        # cross-compilation. OpenSSL 3.6.0 is known to provide all of these.
+        message(STATUS "WASM: Skipping OpenSSL feature tests (known OpenSSL 3.6.0 defaults)")
+        set(HAVE_OPENSSL_SSL_H 1)
+        set(HAVE_LIBCRYPTO 1)
+        set(WITH_ECC 1)
+        set(WITH_EDDSA 1)
+        set(WITH_RAW_PSS 1)
+        set(HAVE_AES_KEY_WRAP 1)
+        set(HAVE_AES_KEY_WRAP_PAD 1)
+        set(WITH_AES_GCM 1)
+        set(DISABLE_NON_PAGED_MEMORY ON)
+    else()
+
     if(WIN32)
         set(_ossl_inc "${OPENSSL_INCLUDE_DIR}")
         if(_ossl_inc)
@@ -404,6 +422,8 @@ elseif(WITH_CRYPTO_BACKEND STREQUAL "openssl")
     set(WITH_RAW_PSS 1)
     # Compile with AES_GCM
     set(WITH_AES_GCM 1)
+
+    endif() # NOT EMSCRIPTEN feature tests
 
 else()
     message(FATAL_ERROR "Crypto backend '${WITH_CRYPTO_BACKEND}' not supported. Use openssl or botan.")
