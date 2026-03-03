@@ -52,13 +52,13 @@ public:
 	CK_RV closeSession(CK_SESSION_HANDLE hSession);
 	CK_RV closeAllSessions(Slot* slot);
 	CK_RV getSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo);
-	Session* getSession(CK_SESSION_HANDLE hSession);
+	std::shared_ptr<Session> getSession(CK_SESSION_HANDLE hSession);
 	bool haveSession(CK_SLOT_ID slotID);
 	bool haveROSession(CK_SLOT_ID slotID);
 
 private:
-	// The sessions
-	std::vector<Session*> sessions;
+	// The sessions — shared_ptr so getSession() callers outlive concurrent C_CloseSession
+	std::vector<std::shared_ptr<Session>> sessions;
 	Mutex* sessionsMutex;
 };
 

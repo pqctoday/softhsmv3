@@ -38,6 +38,11 @@
 #include "cryptoki.h"
 
 #include <map>
+#include <memory>
+
+// Forward declaration — avoids pulling Session.h (and its large crypto includes) into every
+// translation unit that includes HandleManager.h.
+class Session;
 
 #define CK_INTERNAL_SESSION_HANDLE CK_SESSION_HANDLE
 
@@ -49,7 +54,13 @@ public:
     virtual ~HandleManager();
 
     CK_SESSION_HANDLE addSession(CK_SLOT_ID slotID, CK_VOID_PTR session);
+    // Preferred overload: stores a shared_ptr so the Session object stays alive
+    // as long as any caller holds the returned guard (prevents UAF from concurrent
+    // C_CloseSession in native multi-threaded builds).
+    CK_SESSION_HANDLE addSession(CK_SLOT_ID slotID, std::shared_ptr<Session> session);
     CK_VOID_PTR getSession(const CK_SESSION_HANDLE hSession);
+    // Returns a shared_ptr that keeps the Session alive for the caller's scope.
+    std::shared_ptr<Session> getSessionShared(const CK_SESSION_HANDLE hSession);
 
     // Add the session object and return a handle. For objects that have already been registered, check that the
     // slotID matches. The hSession may be different as the object may be added as part of a find objects operation.
@@ -87,6 +98,9 @@ private:
     Mutex* handlesMutex;
     std::map< CK_ULONG, Handle> handles;
     std::map< CK_VOID_PTR, CK_ULONG> objects;
+    // Parallel map: handle → shared_ptr<Session>; keeps Session alive until
+    // sessionClosed()/allSessionsClosed() explicitly releases our reference.
+    std::map< CK_SESSION_HANDLE, std::shared_ptr<Session>> sessionOwnership;
     CK_ULONG handleCounter;
 };
 

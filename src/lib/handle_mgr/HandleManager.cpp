@@ -44,6 +44,7 @@
  *****************************************************************************/
 
 #include "HandleManager.h"
+#include "Session.h"
 #include "log.h"
 
 // Constructor
@@ -70,6 +71,18 @@ CK_SESSION_HANDLE HandleManager::addSession(CK_SLOT_ID slotID, CK_VOID_PTR sessi
 	return (CK_SESSION_HANDLE)handleCounter;
 }
 
+// shared_ptr overload — stores the Session's lifetime in sessionOwnership.
+CK_SESSION_HANDLE HandleManager::addSession(CK_SLOT_ID slotID, std::shared_ptr<Session> session)
+{
+	MutexLocker lock(handlesMutex);
+
+	Handle h(CKH_SESSION, slotID);
+	h.object = session.get();
+	handles[++handleCounter] = h;
+	sessionOwnership[handleCounter] = session;
+	return (CK_SESSION_HANDLE)handleCounter;
+}
+
 CK_VOID_PTR HandleManager::getSession(const CK_SESSION_HANDLE hSession)
 {
 	MutexLocker lock(handlesMutex);
@@ -78,6 +91,19 @@ CK_VOID_PTR HandleManager::getSession(const CK_SESSION_HANDLE hSession)
 	if (it == handles.end() || CKH_SESSION != it->second.kind)
 		return NULL_PTR;
 	return it->second.object;
+}
+
+// Returns a shared_ptr that keeps the Session alive for the caller's scope.
+// The refcount is bumped while the mutex is held, so the session cannot be
+// destroyed between the lookup and the caller's first use.
+std::shared_ptr<Session> HandleManager::getSessionShared(const CK_SESSION_HANDLE hSession)
+{
+	MutexLocker lock(handlesMutex);
+
+	auto it = sessionOwnership.find(hSession);
+	if (it == sessionOwnership.end())
+		return nullptr;
+	return it->second;  // copy bumps refcount; mutex can release safely
 }
 
 CK_OBJECT_HANDLE HandleManager::addSessionObject(CK_SLOT_ID slotID, CK_SESSION_HANDLE hSession, bool isPrivate, CK_VOID_PTR object)
@@ -169,6 +195,10 @@ void HandleManager::sessionClosed(const CK_SESSION_HANDLE hSession)
 
 	slotID = it->second.slotID;
 
+	// Release our shared_ptr reference so the Session can be destroyed once all
+	// callers currently holding a sessionGuard (from getSessionShared) also release.
+	sessionOwnership.erase(hSession);
+
 	// session closed, so we can erase information about it.
 	handles.erase(it);
 
@@ -209,6 +239,9 @@ void HandleManager::allSessionsClosed(const CK_SLOT_ID slotID, bool isLocked)
 		if (slotID == h.slotID) {
 			if (CKH_OBJECT == it->second.kind)
 				objects.erase(it->second.object);
+			// Release shared_ptr for session handles so lifetime is managed correctly.
+			if (CKH_SESSION == h.kind)
+				sessionOwnership.erase(it->first);
 			// Iterator post-incrementing (it++) will return a copy of the original it (which points to handle to be deleted).
 			handles.erase(it++);
 			continue;

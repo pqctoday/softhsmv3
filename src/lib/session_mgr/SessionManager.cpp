@@ -46,14 +46,8 @@ SessionManager::SessionManager()
 // Destructor
 SessionManager::~SessionManager()
 {
-	std::vector<Session*> toDelete = sessions;
+	// shared_ptrs in sessions auto-delete their Session objects when cleared.
 	sessions.clear();
-
-	for (std::vector<Session*>::iterator i = toDelete.begin(); i != toDelete.end(); i++)
-	{
-		if (*i != NULL) delete *i;
-	}
-
 	MutexFactory::i()->recycleMutex(sessionsMutex);
 }
 
@@ -87,7 +81,7 @@ CK_RV SessionManager::openSession
 
 	// Create the session
 	bool rwSession = ((flags & CKF_RW_SESSION) == CKF_RW_SESSION) ? true : false;
-	Session* session = new Session(slot, rwSession, pApplication, notify);
+	auto session = std::make_shared<Session>(slot, rwSession, pApplication, notify);
 
 	// First fill any empty spot in the list
 	for (size_t i = 0; i < sessions.size(); i++)
@@ -147,9 +141,9 @@ CK_RV SessionManager::closeSession(CK_SESSION_HANDLE hSession)
 		sessions[sessionID]->getSlot()->getToken()->logout();
 	}
 
-	// Close the session
-	delete sessions[sessionID];
-	sessions[sessionID] = NULL;
+	// Close the session — reset() drops our shared_ptr; the Session is deleted
+	// when all callers that received a shared_ptr via getSession() also release.
+	sessions[sessionID].reset();
 
 	return CKR_OK;
 }
@@ -168,15 +162,12 @@ CK_RV SessionManager::closeAllSessions(Slot* slot)
 
 	// Close all sessions on this slot
 	const CK_SLOT_ID slotID( slot->getSlotID() );
-	for (std::vector<Session*>::iterator i = sessions.begin(); i != sessions.end(); i++)
+	for (auto& s : sessions)
 	{
-		if (*i == NULL) continue;
+		if (!s) continue;
 
-		if ((*i)->getSlot()->getSlotID() == slotID)
-		{
-			delete *i;
-			*i = NULL;
-		}
+		if (s->getSlot()->getSlotID() == slotID)
+			s.reset();
 	}
 
 	// Logout from the token
@@ -189,23 +180,23 @@ CK_RV SessionManager::closeAllSessions(Slot* slot)
 CK_RV SessionManager::getSessionInfo(CK_SESSION_HANDLE hSession, CK_SESSION_INFO_PTR pInfo)
 {
 	// Get the session
-	Session* session = getSession(hSession);
-	if (session == NULL) return CKR_SESSION_HANDLE_INVALID;
+	auto session = getSession(hSession);
+	if (!session) return CKR_SESSION_HANDLE_INVALID;
 
 	return session->getInfo(pInfo);
 }
 
-// Get the session
-Session* SessionManager::getSession(CK_SESSION_HANDLE hSession)
+// Get the session — returns a shared_ptr so the caller keeps the Session alive.
+std::shared_ptr<Session> SessionManager::getSession(CK_SESSION_HANDLE hSession)
 {
 	// Lock access to the vector
 	MutexLocker lock(sessionsMutex);
 
 	// We do not want to get a negative number below
-	if (hSession == CK_INVALID_HANDLE) return NULL;
+	if (hSession == CK_INVALID_HANDLE) return nullptr;
 
 	// Check if we are out of range
-	if (hSession > sessions.size()) return NULL;
+	if (hSession > sessions.size()) return nullptr;
 
 	return sessions[hSession - 1];
 }
@@ -215,14 +206,12 @@ bool SessionManager::haveSession(CK_SLOT_ID slotID)
 	// Lock access to the vector
 	MutexLocker lock(sessionsMutex);
 
-	for (std::vector<Session*>::iterator i = sessions.begin(); i != sessions.end(); i++)
+	for (const auto& s : sessions)
 	{
-		if (*i == NULL) continue;
+		if (!s) continue;
 
-		if ((*i)->getSlot()->getSlotID() == slotID)
-		{
+		if (s->getSlot()->getSlotID() == slotID)
 			return true;
-		}
 	}
 
 	return false;
@@ -233,13 +222,13 @@ bool SessionManager::haveROSession(CK_SLOT_ID slotID)
 	// Lock access to the vector
 	MutexLocker lock(sessionsMutex);
 
-	for (std::vector<Session*>::iterator i = sessions.begin(); i != sessions.end(); i++)
+	for (const auto& s : sessions)
 	{
-		if (*i == NULL) continue;
+		if (!s) continue;
 
-		if ((*i)->getSlot()->getSlotID() != slotID) continue;
+		if (s->getSlot()->getSlotID() != slotID) continue;
 
-		if ((*i)->isRW() == false) return true;
+		if (s->isRW() == false) return true;
 	}
 
 	return false;
