@@ -1531,18 +1531,35 @@ PKCS_API CK_RV C_MessageDecryptFinal(CK_SESSION_HANDLE /*hSession*/)
 // v3.0 additions — §5.18 Message-based signing
 // ---------------------------------------------------------------------------
 
-PKCS_API CK_RV C_MessageSignInit(CK_SESSION_HANDLE /*hSession*/,
-	CK_MECHANISM_PTR /*pMechanism*/, CK_OBJECT_HANDLE /*hKey*/)
+PKCS_API CK_RV C_MessageSignInit(CK_SESSION_HANDLE hSession,
+	CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey)
 {
-	return CKR_FUNCTION_NOT_SUPPORTED;
+	try
+	{
+		return SoftHSM::i()->C_MessageSignInit(hSession, pMechanism, hKey);
+	}
+	catch (...)
+	{
+		FatalException();
+	}
+	return CKR_FUNCTION_FAILED;
 }
 
-PKCS_API CK_RV C_SignMessage(CK_SESSION_HANDLE /*hSession*/,
-	CK_VOID_PTR /*pParameter*/, CK_ULONG /*ulParameterLen*/,
-	CK_BYTE_PTR /*pData*/, CK_ULONG /*ulDataLen*/,
-	CK_BYTE_PTR /*pSignature*/, CK_ULONG_PTR /*pulSignatureLen*/)
+PKCS_API CK_RV C_SignMessage(CK_SESSION_HANDLE hSession,
+	CK_VOID_PTR pParameter, CK_ULONG ulParameterLen,
+	CK_BYTE_PTR pData, CK_ULONG ulDataLen,
+	CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen)
 {
-	return CKR_FUNCTION_NOT_SUPPORTED;
+	try
+	{
+		return SoftHSM::i()->C_SignMessage(hSession, pParameter, ulParameterLen,
+			pData, ulDataLen, pSignature, pulSignatureLen);
+	}
+	catch (...)
+	{
+		FatalException();
+	}
+	return CKR_FUNCTION_FAILED;
 }
 
 PKCS_API CK_RV C_SignMessageBegin(CK_SESSION_HANDLE /*hSession*/,
@@ -1559,27 +1576,52 @@ PKCS_API CK_RV C_SignMessageNext(CK_SESSION_HANDLE /*hSession*/,
 	return CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-PKCS_API CK_RV C_MessageSignFinal(CK_SESSION_HANDLE /*hSession*/)
+PKCS_API CK_RV C_MessageSignFinal(CK_SESSION_HANDLE hSession)
 {
-	return CKR_FUNCTION_NOT_SUPPORTED;
+	try
+	{
+		return SoftHSM::i()->C_MessageSignFinal(hSession);
+	}
+	catch (...)
+	{
+		FatalException();
+	}
+	return CKR_FUNCTION_FAILED;
 }
 
 // ---------------------------------------------------------------------------
 // v3.0 additions — §5.19 Message-based verification
 // ---------------------------------------------------------------------------
 
-PKCS_API CK_RV C_MessageVerifyInit(CK_SESSION_HANDLE /*hSession*/,
-	CK_MECHANISM_PTR /*pMechanism*/, CK_OBJECT_HANDLE /*hKey*/)
+PKCS_API CK_RV C_MessageVerifyInit(CK_SESSION_HANDLE hSession,
+	CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey)
 {
-	return CKR_FUNCTION_NOT_SUPPORTED;
+	try
+	{
+		return SoftHSM::i()->C_MessageVerifyInit(hSession, pMechanism, hKey);
+	}
+	catch (...)
+	{
+		FatalException();
+	}
+	return CKR_FUNCTION_FAILED;
 }
 
-PKCS_API CK_RV C_VerifyMessage(CK_SESSION_HANDLE /*hSession*/,
-	CK_VOID_PTR /*pParameter*/, CK_ULONG /*ulParameterLen*/,
-	CK_BYTE_PTR /*pData*/, CK_ULONG /*ulDataLen*/,
-	CK_BYTE_PTR /*pSignature*/, CK_ULONG /*ulSignatureLen*/)
+PKCS_API CK_RV C_VerifyMessage(CK_SESSION_HANDLE hSession,
+	CK_VOID_PTR pParameter, CK_ULONG ulParameterLen,
+	CK_BYTE_PTR pData, CK_ULONG ulDataLen,
+	CK_BYTE_PTR pSignature, CK_ULONG ulSignatureLen)
 {
-	return CKR_FUNCTION_NOT_SUPPORTED;
+	try
+	{
+		return SoftHSM::i()->C_VerifyMessage(hSession, pParameter, ulParameterLen,
+			pData, ulDataLen, pSignature, ulSignatureLen);
+	}
+	catch (...)
+	{
+		FatalException();
+	}
+	return CKR_FUNCTION_FAILED;
 }
 
 PKCS_API CK_RV C_VerifyMessageBegin(CK_SESSION_HANDLE /*hSession*/,
@@ -1596,9 +1638,17 @@ PKCS_API CK_RV C_VerifyMessageNext(CK_SESSION_HANDLE /*hSession*/,
 	return CKR_FUNCTION_NOT_SUPPORTED;
 }
 
-PKCS_API CK_RV C_MessageVerifyFinal(CK_SESSION_HANDLE /*hSession*/)
+PKCS_API CK_RV C_MessageVerifyFinal(CK_SESSION_HANDLE hSession)
 {
-	return CKR_FUNCTION_NOT_SUPPORTED;
+	try
+	{
+		return SoftHSM::i()->C_MessageVerifyFinal(hSession);
+	}
+	catch (...)
+	{
+		FatalException();
+	}
+	return CKR_FUNCTION_FAILED;
 }
 
 // ---------------------------------------------------------------------------

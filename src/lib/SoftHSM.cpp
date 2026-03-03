@@ -5527,6 +5527,112 @@ CK_RV SoftHSM::C_VerifyFinal(CK_SESSION_HANDLE hSession, CK_BYTE_PTR pSignature,
 		return AsymVerifyFinal(session, pSignature, ulSignatureLen);
 }
 
+// ── PKCS#11 v3.0: one-shot message signing ───────────────────────────────────────────────────
+
+// C_MessageSignInit — initialise a multi-message sign context (PKCS#11 v3.0 §5.8.1)
+CK_RV SoftHSM::C_MessageSignInit(CK_SESSION_HANDLE hSession,
+	CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey)
+{
+	// Reuse existing asymmetric-sign init; it validates the key, mechanism, and session
+	CK_RV rv = AsymSignInit(hSession, pMechanism, hKey);
+	if (rv != CKR_OK) return rv;
+
+	// Upgrade op type so C_Sign cannot be called against this context
+	Session* session = (Session*)handleManager->getSession(hSession);
+	if (session == NULL) return CKR_SESSION_HANDLE_INVALID;
+	session->setOpType(SESSION_OP_MESSAGE_SIGN);
+	return CKR_OK;
+}
+
+// C_SignMessage — one-shot message sign (PKCS#11 v3.0 §5.8.2)
+// pParameter / ulParameterLen are mechanism-specific; NULL/0 for ML-DSA and SLH-DSA.
+CK_RV SoftHSM::C_SignMessage(CK_SESSION_HANDLE hSession,
+	CK_VOID_PTR /*pParameter*/, CK_ULONG /*ulParameterLen*/,
+	CK_BYTE_PTR pData, CK_ULONG ulDataLen,
+	CK_BYTE_PTR pSignature, CK_ULONG_PTR pulSignatureLen)
+{
+	if (!isInitialised) return CKR_CRYPTOKI_NOT_INITIALIZED;
+	if (pData == NULL_PTR) return CKR_ARGUMENTS_BAD;
+	if (pulSignatureLen == NULL_PTR) return CKR_ARGUMENTS_BAD;
+
+	Session* session = (Session*)handleManager->getSession(hSession);
+	if (session == NULL) return CKR_SESSION_HANDLE_INVALID;
+	if (session->getOpType() != SESSION_OP_MESSAGE_SIGN)
+		return CKR_OPERATION_NOT_INITIALIZED;
+
+	// AsymSign expects SESSION_OP_SIGN; temporarily satisfy that check
+	session->setOpType(SESSION_OP_SIGN);
+	CK_RV rv = AsymSign(session, pData, ulDataLen, pSignature, pulSignatureLen);
+
+	// Size-query path (pSignature == NULL): AsymSign returned early without resetOp.
+	// Restore MESSAGE_SIGN so the caller can still perform the actual sign.
+	if (pSignature == NULL_PTR && rv == CKR_OK)
+		session->setOpType(SESSION_OP_MESSAGE_SIGN);
+
+	return rv;
+}
+
+// C_MessageSignFinal — end a multi-message sign context (PKCS#11 v3.0 §5.8.6)
+CK_RV SoftHSM::C_MessageSignFinal(CK_SESSION_HANDLE hSession)
+{
+	if (!isInitialised) return CKR_CRYPTOKI_NOT_INITIALIZED;
+	Session* session = (Session*)handleManager->getSession(hSession);
+	if (session == NULL) return CKR_SESSION_HANDLE_INVALID;
+	if (session->getOpType() != SESSION_OP_MESSAGE_SIGN)
+		return CKR_OPERATION_NOT_INITIALIZED;
+	session->resetOp();
+	return CKR_OK;
+}
+
+// C_MessageVerifyInit — initialise a multi-message verify context (PKCS#11 v3.0 §5.8.7)
+CK_RV SoftHSM::C_MessageVerifyInit(CK_SESSION_HANDLE hSession,
+	CK_MECHANISM_PTR pMechanism, CK_OBJECT_HANDLE hKey)
+{
+	CK_RV rv = AsymVerifyInit(hSession, pMechanism, hKey);
+	if (rv != CKR_OK) return rv;
+
+	Session* session = (Session*)handleManager->getSession(hSession);
+	if (session == NULL) return CKR_SESSION_HANDLE_INVALID;
+	session->setOpType(SESSION_OP_MESSAGE_VERIFY);
+	return CKR_OK;
+}
+
+// C_VerifyMessage — one-shot message verify (PKCS#11 v3.0 §5.8.8)
+// pParameter / ulParameterLen are mechanism-specific; NULL/0 for ML-DSA and SLH-DSA.
+CK_RV SoftHSM::C_VerifyMessage(CK_SESSION_HANDLE hSession,
+	CK_VOID_PTR /*pParameter*/, CK_ULONG /*ulParameterLen*/,
+	CK_BYTE_PTR pData, CK_ULONG ulDataLen,
+	CK_BYTE_PTR pSignature, CK_ULONG ulSignatureLen)
+{
+	if (!isInitialised) return CKR_CRYPTOKI_NOT_INITIALIZED;
+	if (pData == NULL_PTR) return CKR_ARGUMENTS_BAD;
+	if (pSignature == NULL_PTR) return CKR_ARGUMENTS_BAD;
+
+	Session* session = (Session*)handleManager->getSession(hSession);
+	if (session == NULL) return CKR_SESSION_HANDLE_INVALID;
+	if (session->getOpType() != SESSION_OP_MESSAGE_VERIFY)
+		return CKR_OPERATION_NOT_INITIALIZED;
+
+	// AsymVerify expects SESSION_OP_VERIFY; temporarily satisfy that check.
+	// AsymVerify always calls resetOp() before returning, so no restore needed.
+	session->setOpType(SESSION_OP_VERIFY);
+	return AsymVerify(session, pData, ulDataLen, pSignature, ulSignatureLen);
+}
+
+// C_MessageVerifyFinal — end a multi-message verify context (PKCS#11 v3.0 §5.8.12)
+CK_RV SoftHSM::C_MessageVerifyFinal(CK_SESSION_HANDLE hSession)
+{
+	if (!isInitialised) return CKR_CRYPTOKI_NOT_INITIALIZED;
+	Session* session = (Session*)handleManager->getSession(hSession);
+	if (session == NULL) return CKR_SESSION_HANDLE_INVALID;
+	if (session->getOpType() != SESSION_OP_MESSAGE_VERIFY)
+		return CKR_OPERATION_NOT_INITIALIZED;
+	session->resetOp();
+	return CKR_OK;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 // Initialise a verification operation the allows recovery of the signed data from the signature
 CK_RV SoftHSM::C_VerifyRecoverInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR /*pMechanism*/, CK_OBJECT_HANDLE /*hKey*/)
 {
