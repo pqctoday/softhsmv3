@@ -1,310 +1,304 @@
-# PKCS#11 v3.2 Compliance Gap Analysis — softhsmv3 (v2)
+# PKCS#11 v3.2 Compliance Gap Analysis — softhsmv3 (v5)
 
-**Updated:** 2026-03-03
-**Baseline:** Post-Phase-6 (commit `15f7c63`) — full PQC + WASM + npm package complete
+**Updated:** 2026-03-04 (v5 — 5G Security gaps resolved)
+**Baseline:** Post-Phase-7 + G-DA1 + G-DA2 + G-5G1 + G-5G2 + G-5G3 — all tracked gaps resolved
 **Spec reference:** OASIS PKCS#11 v3.2 CSD01 (<http://docs.oasis-open.org/pkcs11/pkcs11-base/v3.2/>)
-**Prior baseline:** Phase 1 (commit `87b27bf`, 2026-03-02) — 50 gaps documented; all 50 now resolved
+**Prior baseline (v4):** Post-Phase-7 (2026-03-04) — G1–G6 resolved; G-DA1/G-DA2 identified via
+Digital Assets module crypto audit.
 
 ---
 
 ## Executive Summary
 
-| Dimension | Total remaining | BLOCKER | HIGH | MEDIUM | LOW |
-|---|---|---|---|---|---|
-| C_* function stubs | 22 | — | 4 | 6 | 2 |
-| CKM_* mechanisms | 13 | 13 | — | — | — |
-| **Actionable (tracked as issues)** | **6 gap groups** | **1** | **2** | **2** | **1** |
-
 All NIST PQC finalists (ML-KEM, ML-DSA, SLH-DSA) are fully implemented.
 All v3.2 KEM functions (`C_EncapsulateKey`, `C_DecapsulateKey`) are implemented.
-All v3.0 one-shot message sign/verify functions are implemented.
-The 22 remaining stubs are optional or low-priority for current PQC use cases,
-with the exception of G1 (`CKM_HASH_SLH_DSA*`) which is a parity blocker vs. ML-DSA.
+All v3.0/v3.2 message sign/verify functions are implemented (one-shot and streaming).
+All v3.2 pre-hash mechanisms for both ML-DSA and SLH-DSA are registered and dispatched.
+All v3.2 additions tracked as G1–G6 are implemented.
+**v4:** `CKM_PKCS5_PBKD2` (G-DA1) and `CKM_ECDSA_SHA3_224/256/384/512` (G-DA2)
+implemented — completing the Digital Assets module crypto requirements.
+**NEW (v5):** `CKM_AES_CTR` (G-5G1), `CKD_SHA256_KDF` on `CKM_ECDH1_DERIVE` (G-5G2),
+and `CKM_HKDF_DERIVE` (G-5G3) implemented — completing the 5G Security module PKCS#11 path
+for SUCI deconcealment (3GPP TS 33.501 §6.12.2).
+
+| Dimension | Remaining open | Notes |
+| --- | --- | --- |
+| C_* function stubs (in scope) | 0 | All G1–G6 + G-DA1/G-DA2 + G-5G1/5G2/5G3 resolved |
+| CKM_* mechanisms (in scope) | 0 | AES-CTR, HKDF, X9.63 KDF support added |
+| Out-of-scope stubs | 3 | Async (G7), Recovery/Combined ops (G8) |
+| Out-of-scope mechanisms | 1 | CKM_RIPEMD160 (WASM `no-module` constraint, G9) |
 
 ---
 
-## 1. Previously Tracked Gaps — All Resolved
+## 1. Resolved Gaps (v2 list — G1–G6)
 
-The following 50 gaps were documented in the v1 gap analysis (Phase 1 baseline).
-All are now implemented. Closed GitHub issues: #8–#15.
+All of the following were open in the v2 baseline and are now confirmed implemented.
 
-### 1.1 C_* Function Table (14 gaps → all resolved)
+### 1.1 G1 — CKM_HASH_SLH_DSA* — 13 pre-hash mechanism variants ✓ RESOLVED
 
-| Function | Severity | Resolved in | Issue |
-|---|---|---|---|
-| `C_GetInterfaceList` | BLOCKER | Phase 2 | #8 |
-| `C_GetInterface` | BLOCKER | Phase 2 | #8 |
-| `C_EncapsulateKey` | BLOCKER | Phase 3 | #9 |
-| `C_DecapsulateKey` | BLOCKER | Phase 3 | #9 |
-| `C_MessageSignInit` | HIGH | Phase 2 | #10 |
-| `C_SignMessage` | HIGH | Phase 2 | #10 |
-| `C_MessageSignFinal` | HIGH | Phase 2 | #10 |
-| `C_MessageVerifyInit` | HIGH | Phase 2 | #10 |
-| `C_VerifyMessage` | HIGH | Phase 2 | #10 |
-| `C_MessageVerifyFinal` | HIGH | Phase 2 | #10 |
-| `C_LoginUser` | MEDIUM | Phase 2 | #8 |
-| `C_SessionCancel` | MEDIUM | Phase 2 | #8 |
-| `C_GetOperationState` | MEDIUM | Phase 2 | — |
-| `C_SetOperationState` | MEDIUM | Phase 2 | — |
+All 13 SLH-DSA pre-hash mechanisms are:
 
-> Note: `C_LoginUser` and `C_SessionCancel` were marked resolved in the original phase
-> mapping but remain as stubs in `main.cpp`. See §2.6 below.
+- **Registered** in `prepareSupportedMechanisms()` (`src/lib/SoftHSM_slots.cpp:414–427`)
+- **Dispatched** in `AsymSignInit()` and `AsymVerifyInit()` (`src/lib/SoftHSM_sign.cpp`, `HASH_SLHDSA_CASE` macros)
+- **Handled** in `OSSLSLHDSA.cpp` (`AsymMech::HASH_SLHDSA` through `HASH_SLHDSA_SHAKE256`)
+- **Defined** in `AsymmetricAlgorithm.h` enum
 
-### 1.2 CKM_* Mechanisms (28 gaps → all resolved)
+Full parity with ML-DSA pre-hash (12 hash variants each, plus 1 generic = 13 total for each).
 
-| Mechanism group | Algorithm | Resolved in | Issue |
-|---|---|---|---|
-| `CKM_ML_DSA_KEY_PAIR_GEN`, `CKM_ML_DSA` | ML-DSA (FIPS 204) | Phase 2 | #12 |
-| `CKM_HASH_ML_DSA` + 11 hash variants | ML-DSA pre-hash | Phase 2 | #12 |
-| `CKM_SLH_DSA_KEY_PAIR_GEN`, `CKM_SLH_DSA` | SLH-DSA (FIPS 205) | Phase 2 | #13 |
-| `CKM_ML_KEM_KEY_PAIR_GEN`, `CKM_ML_KEM` | ML-KEM (FIPS 203) | Phase 3 | #14 |
+Playground integration also resolved: `softhsm.ts` now exports `CKM_HASH_SLH_DSA_*` constants
+and `hsm_slhdsaSign`/`hsm_slhdsaVerify` accept `opts.preHash` for all 10 hash variants.
 
-### 1.3 CKK_* Key Types (3 gaps → all resolved)
+### 1.2 G2 — Streaming message sign/verify — 4 functions ✓ RESOLVED
 
-| Key type | Hex | Resolved in | Issue |
-|---|---|---|---|
-| `CKK_ML_DSA` | `0x0000004aUL` | Phase 2 | #12 |
-| `CKK_SLH_DSA` | `0x0000004bUL` | Phase 2 | #13 |
-| `CKK_ML_KEM` | `0x00000049UL` | Phase 3 | #14 |
+| Function | File | Lines |
+| --- | --- | --- |
+| `C_SignMessageBegin` | `SoftHSM_sign.cpp` | 2461 |
+| `C_SignMessageNext` | `SoftHSM_sign.cpp` | 2484 |
+| `C_VerifyMessageBegin` | `SoftHSM_sign.cpp` | 2528 |
+| `C_VerifyMessageNext` | `SoftHSM_sign.cpp` | 2549 |
 
-### 1.4 CKA_* Attributes (5 gaps → all resolved)
+### 1.3 G3 — Message Encrypt/Decrypt API — 10 functions ✓ RESOLVED
 
-| Attribute | Hex | Resolved in | Issue |
-|---|---|---|---|
-| `CKA_PARAMETER_SET` | `0x0000061dUL` | Phase 2 | #11 |
-| `CKA_ENCAPSULATE` | `0x00000633UL` | Phase 3 | #15 |
-| `CKA_DECAPSULATE` | `0x00000634UL` | Phase 3 | #15 |
-| `CKA_ENCAPSULATE_TEMPLATE` | `0x0000062aUL` | Phase 3 | #15 |
-| `CKA_DECAPSULATE_TEMPLATE` | `0x0000062bUL` | Phase 3 | #15 |
+All 10 functions implemented in `src/lib/SoftHSM_cipher.cpp` (from line 1299).
+`C_MessageEncryptInit` at line 1529. State machine uses `SESSION_OP_MESSAGE_ENCRYPT` (0x15).
+
+### 1.4 G4 — C_VerifySignature* — 4 functions ✓ RESOLVED
+
+| Function | File | Lines |
+| --- | --- | --- |
+| `C_VerifySignatureInit` | `SoftHSM_sign.cpp` | 2595 |
+| `C_VerifySignature` | `SoftHSM_sign.cpp` | (follows) |
+| `C_VerifySignatureUpdate` | `SoftHSM_sign.cpp` | (follows) |
+| `C_VerifySignatureFinal` | `SoftHSM_sign.cpp` | (follows) |
+
+State: `SESSION_OP_VERIFY_SIGNATURE` (0x19) defined in `session_mgr/Session.h:65`.
+
+### 1.5 G5 — Authenticated key wrapping — 2 functions ✓ RESOLVED
+
+| Function | File | Lines |
+| --- | --- | --- |
+| `C_WrapKeyAuthenticated` | `SoftHSM_keygen.cpp` | 1568 |
+| `C_UnwrapKeyAuthenticated` | `SoftHSM_keygen.cpp` | (follows) |
+
+### 1.6 G6 — v3.0 session management — 2 functions ✓ RESOLVED
+
+| Function | File | Lines |
+| --- | --- | --- |
+| `C_LoginUser` | `SoftHSM_sessions.cpp` | 238 |
+| `C_SessionCancel` | `SoftHSM_sessions.cpp` | 250 |
 
 ---
 
-## 2. Remaining Gaps (post-Phase-6, newly identified)
+## 1.5 Digital Assets Module Gaps (v4 additions — G-DA1, G-DA2)
 
-All function stubs reside in `src/lib/main.cpp` and return `CKR_FUNCTION_NOT_SUPPORTED`.
-Function pointers are wired into `CK_FUNCTION_LIST_3_0` and `CK_FUNCTION_LIST_3_2`
-so callers receive a proper PKCS#11 error rather than a crash.
+Identified via audit of the Digital Assets learning module crypto operations cross-referenced
+against PKCS#11 v3.2 spec. All Digital Assets crypto was mapped; two mechanisms were missing.
 
-### 2.1 G1 — CKM_HASH_SLH_DSA* — 13 pre-hash mechanism variants (BLOCKER)
+### 1.7 G-DA1 — `CKM_PKCS5_PBKD2` — PBKDF2 key derivation ✓ RESOLVED
 
-**GitHub issue:** #16
+**Need:** BIP39 mnemonic → 64-byte seed derivation (`PBKDF2-HMAC-SHA512`, 2048 iterations).
+**PKCS#11 v3.2:** `§5.7.3.1` — `CKM_PKCS5_PBKD2` (`0x000003b0`), uses `CK_PKCS5_PBKD2_PARAMS2`.
 
-SLH-DSA has 13 pre-hash mechanism variants defined in the spec, mirroring ML-DSA:
+| Component | File | Change |
+| --- | --- | --- |
+| Mechanism registry | `SoftHSM_slots.cpp:356` | Added `CKM_PKCS5_PBKD2` with `CKF_DERIVE` |
+| C_DeriveKey handler | `SoftHSM_keygen.cpp:1908` | PBKDF2 early-return path (no base key) |
+| OpenSSL call | `SoftHSM_keygen.cpp` | `PKCS5_PBKDF2_HMAC()` — maps `CKP_PKCS5_PBKD2_HMAC_{SHA1,SHA224,SHA256,SHA384,SHA512}` |
+| Playground constant | `softhsm.ts:1103` | `CKM_PKCS5_PBKD2 = 0x3b0` + `CKP_PKCS5_PBKD2_HMAC_*` |
+| Playground helper | `softhsm.ts:1669` | `hsm_pbkdf2(M, hSession, password, salt, iterations, keyLen, prf?)` |
+| Learning module | `hsmConstants.ts` | Added to `PKCS11_MECHANISMS` array |
 
-| Mechanism | Hex value | Operation |
-|---|---|---|
-| `CKM_HASH_SLH_DSA` | `0x00000034UL` | Pre-hash variant (any digest) |
-| `CKM_HASH_SLH_DSA_SHA224` | `0x00000036UL` | Pre-hash with SHA-224 |
-| `CKM_HASH_SLH_DSA_SHA256` | `0x00000037UL` | Pre-hash with SHA-256 |
-| `CKM_HASH_SLH_DSA_SHA384` | `0x00000038UL` | Pre-hash with SHA-384 |
-| `CKM_HASH_SLH_DSA_SHA512` | `0x00000039UL` | Pre-hash with SHA-512 |
-| `CKM_HASH_SLH_DSA_SHA3_224` | `0x0000003aUL` | Pre-hash with SHA3-224 |
-| `CKM_HASH_SLH_DSA_SHA3_256` | `0x0000003bUL` | Pre-hash with SHA3-256 |
-| `CKM_HASH_SLH_DSA_SHA3_384` | `0x0000003cUL` | Pre-hash with SHA3-384 |
-| `CKM_HASH_SLH_DSA_SHA3_512` | `0x0000003dUL` | Pre-hash with SHA3-512 |
-| `CKM_HASH_SLH_DSA_SHAKE128` | `0x0000003eUL` | Pre-hash with SHAKE-128 |
-| `CKM_HASH_SLH_DSA_SHAKE256` | `0x0000003fUL` | Pre-hash with SHAKE-256 |
+**PRFs supported:** SHA-1, SHA-224, SHA-256, SHA-384, SHA-512 (default: SHA-512 for BIP39).
 
-All 13 are defined in `src/lib/pkcs11/pkcs11t.h` but:
+### 1.8 G-DA2 — `CKM_ECDSA_SHA3_224/256/384/512` — ECDSA with SHA-3 prehash ✓ RESOLVED
 
-- **Not registered** in `prepareSupportedMechanisms()` (`src/lib/SoftHSM_slots.cpp:330–473`)
-- **Not dispatched** in `src/lib/SoftHSM_sign.cpp` (only `CKM_SLH_DSA` is handled)
+**Need:** PKCS#11 v3.2 §6.3 spec completeness. SHA-3 hash support already existed; only
+  registration and dispatch were missing.
 
-ML-DSA has full parity: `CKM_HASH_ML_DSA` + 11 hash variants are registered and dispatched.
-SLH-DSA's omission of the hash variants is an asymmetry that must be resolved.
+| Component | File | Change |
+| --- | --- | --- |
+| Enum values | `AsymmetricAlgorithm.h:98` | Added `ECDSA_SHA3_{224,256,384,512}` |
+| OpenSSL dispatch | `OSSLECDSA.cpp:108,245` | Added `EVP_sha3_{224,256,384,512}()` in `sign()` + `verify()` |
+| Mechanism registry | `SoftHSM_slots.cpp:391` | Registered 4 `CKM_ECDSA_SHA3_*` mechanisms |
+| Sign dispatch | `SoftHSM_sign.cpp:670` | Added 4 cases in `AsymSignInit()` |
+| Verify dispatch | `SoftHSM_sign.cpp:1670` | Added 4 cases in `AsymVerifyInit()` |
+| Playground constants | `softhsm.ts:1091` | `CKM_ECDSA_SHA3_{224,256,384,512} = 0x1047–0x104a` |
+| Learning module | `hsmConstants.ts` | Added 4 entries to `PKCS11_MECHANISMS` |
 
-**Implementation approach** (mirrors existing ML-DSA hash dispatch):
+**Note:** `CKM_RIPEMD160` is **not** implemented — see G11 below for rationale.
 
-1. Add 13 entries to `prepareSupportedMechanisms()` (copy ML-DSA block, substitute SLH_DSA names)
-2. Add 13 `case` labels to the `AsymSignInit` / `AsymVerifyInit` dispatch switch in `SoftHSM_sign.cpp`
-3. Map each `CKM_HASH_SLH_DSA_*` → the appropriate `HashAlgorithm` enum value + `SLHDSA` mechanism
+---
 
-### 2.2 G2 — Streaming message sign/verify — 4 stubs (HIGH)
+## 1.9 5G Security Module Gaps (v5 additions — G-5G1, G-5G2, G-5G3)
 
-**GitHub issue:** #17
+Identified via audit of the 5G Security learning module (SUCI deconcealment + MILENAGE) crypto
+operations cross-referenced against PKCS#11 v3.2 and softhsmv3 coverage.
 
-The v3.0 message signing API has two modes: one-shot and streaming.
-One-shot (`C_SignMessage` / `C_VerifyMessage`) is implemented. Streaming is not.
+**Context:** 5G NR SUCI (3GPP TS 33.501 §6.12.2) uses ECIES-based subscriber privacy:
+Profile A (X25519 + ANSI X9.63-SHA256 KDF + AES-128-CTR + HMAC-SHA256),
+Profile B (P-256 + same), Profile C (ML-KEM-768 hybrid + AES-256-CTR + HMAC-SHA3-256).
+MILENAGE (TS 35.206) uses AES-128-ECB for f1–f5. KAUSF uses HMAC-SHA-256.
 
-| Function | `main.cpp` line | Description |
-|---|---|---|
-| `C_SignMessageBegin` | 1565 | Begin streaming sign; subsequent calls feed chunks |
-| `C_SignMessageNext` | 1571 | Feed next chunk; `CKF_END_OF_MESSAGE` flag finalizes |
-| `C_VerifyMessageBegin` | 1627 | Begin streaming verify |
-| `C_VerifyMessageNext` | 1633 | Feed next chunk; `CKF_END_OF_MESSAGE` flag finalizes |
+### 1.9 G-5G1 — `CKM_AES_CTR` — AES Counter mode ✓ RESOLVED
 
-Streaming mode allows apps to sign multiple messages per `C_MessageSignInit` call
-without re-initializing for each message — important for high-throughput ML-DSA signing.
+**Need:** SUCI MSIN encryption for Profiles A/B (AES-128-CTR) and Profile C (AES-256-CTR).
+`CKM_AES_CTR` was already registered and dispatched in softhsmv3 (slots.cpp:380, cipher.cpp:59,130,746)
+but was missing from the app-side WASM wrapper — app-only fix, no WASM rebuild required.
 
-**Spec reference:** PKCS#11 v3.2 §5.18 (Multi-part message operations)
+**`CK_AES_CTR_PARAMS`** (20 bytes): `ulCounterBits`[4] + `cb[16]` counter/IV block. For SUCI:
+`ulCounterBits = 128`, `cb = 00...00` (zero IV per 3GPP spec).
 
-### 2.3 G3 — Message Encrypt/Decrypt API — 10 stubs (HIGH)
+| Component | File | Change |
+| --- | --- | --- |
+| Constants | `softhsm.ts:~1113` | `CKM_AES_ECB = 0x1081`, `CKM_AES_CTR = 0x1086` |
+| Helper | `softhsm.ts` | `hsm_aesCtrEncrypt(M, hSession, key, ctrIv, counterBits, data)` |
+| Helper | `softhsm.ts` | `hsm_aesCtrDecrypt(M, hSession, key, ctrIv, counterBits, data)` |
+| Learning module | `hsmConstants.ts` | Added `ckm-aes-ecb` and `ckm-aes-ctr` entries |
 
-**GitHub issue:** #18
+### 1.10 G-5G2 — `CKD_SHA256_KDF` on `CKM_ECDH1_DERIVE` — ANSI X9.63 KDF ✓ RESOLVED
 
-The v3.0 message encryption API enables per-message IV generation — a safer pattern than
-the caller-supplied IV in `C_EncryptInit`. Required for tokens advertising `CKF_MESSAGE_ENCRYPT`.
+**Need:** SUCI Profiles A/B key derivation after ECDH — `K = SHA256(Z ∥ counter ∥ SharedInfo)`
+(ANSI X9.63, 3GPP TS 33.501 §C.3). Maps to `CKM_ECDH1_DERIVE` with `kdf = CKD_SHA256_KDF`
+in `CK_ECDH1_DERIVE_PARAMS`. Previously softhsmv3 rejected any `kdf != CKD_NULL`.
 
-| Function | `main.cpp` line | Group |
-|---|---|---|
-| `C_MessageEncryptInit` | 1454 | Init (AES-GCM with auto-IV) |
-| `C_EncryptMessage` | 1460 | One-shot encrypt |
-| `C_EncryptMessageBegin` | 1469 | Begin multi-part |
-| `C_EncryptMessageNext` | 1476 | Feed chunk |
-| `C_MessageEncryptFinal` | 1485 | Finalize session |
-| `C_MessageDecryptInit` | 1494 | Init decrypt |
-| `C_DecryptMessage` | 1500 | One-shot decrypt |
-| `C_DecryptMessageBegin` | 1509 | Begin multi-part |
-| `C_DecryptMessageNext` | 1516 | Feed chunk |
-| `C_MessageDecryptFinal` | 1525 | Finalize session |
+**OpenSSL implementation:** `EVP_KDF_fetch(NULL, "X963KDF", NULL)` + `EVP_KDF_derive()` with
+`OSSL_KDF_PARAM_DIGEST`, `OSSL_KDF_PARAM_SECRET`, `OSSL_KDF_PARAM_INFO` (SharedInfo).
+KDF confirmed present in WASM libcrypto.a via `ossl_kdf_x963_kdf_functions` symbol.
+Used non-deprecated OpenSSL 3.x EVP_KDF API (not `ECDH_KDF_X9_62` which is OSSL_DEPRECATEDIN_3_0).
 
-**Spec reference:** PKCS#11 v3.2 §5.14 (Message-based encryption and decryption)
+| Component | File | Change |
+| --- | --- | --- |
+| Validation fix (ECDH) | `SoftHSM_keygen.cpp:deriveECDH()` | Accept `CKD_SHA{1,256,384,512}_KDF`; reject only unknown KDFs |
+| KDF dispatch (ECDH) | `SoftHSM_keygen.cpp:deriveECDH()` | After `secret->getKeyBits()`: apply `EVP_KDF X963KDF` if `kdf != CKD_NULL` |
+| Validation fix (EdDSA/X25519) | `SoftHSM_keygen.cpp:deriveEDDSA()` | Same as ECDH |
+| KDF dispatch (EdDSA/X25519) | `SoftHSM_keygen.cpp:deriveEDDSA()` | Same as ECDH |
+| New includes | `SoftHSM_keygen.cpp:79` | `<openssl/kdf.h>`, `<openssl/core_names.h>`, `<openssl/params.h>` |
+| File-scope helpers | `SoftHSM_keygen.cpp:89` | `ckdToDigestName()`, `ckmToDigestName()` static functions |
+| Constants | `softhsm.ts` | `CKD_SHA1_KDF=0x2`, `CKD_SHA256_KDF=0x6`, `CKD_SHA384_KDF=0x7`, `CKD_SHA512_KDF=0x8` |
+| API update | `softhsm.ts:hsm_ecdhDerive()` | New optional params: `kdf`, `sharedData`, `keyLen` |
 
-### 2.4 G4 — C_VerifySignature* — 4 stubs (MEDIUM)
+**KDFs supported:** SHA-1, SHA-256, SHA-384, SHA-512 via `CKD_SHA{1,256,384,512}_KDF`.
+**Note:** `checkValue = false` applied when KDF is active — KCV not meaningful for KDF-derived keys.
 
-**GitHub issue:** #19
+### 1.11 G-5G3 — `CKM_HKDF_DERIVE` — HMAC-based KDF ✓ RESOLVED
 
-New in v3.2: a signature-first verification API where the signature is bound at init time,
-and the data is fed at verify time (inverse of `C_VerifyInit` / `C_VerifyFinal`).
+**Need:** PKCS#11 v3.0 standard HKDF mechanism for hybrid key combination (SUCI Profile C:
+`SHA256(Z_ecdh ∥ Z_kem) → KDF`), TLS 1.3 key schedule, Signal Protocol.
+`CKM_HKDF_DERIVE = 0x0000402a`. Not present in softhsmv3 prior to this fix.
 
-| Function | `main.cpp` line | Description |
-|---|---|---|
-| `C_VerifySignatureInit` | 1682 | Init verify; signature passed here |
-| `C_VerifySignature` | 1689 | One-shot: feed all data, get result |
-| `C_VerifySignatureUpdate` | 1695 | Feed data chunk |
-| `C_VerifySignatureFinal` | 1701 | Finalize and get result |
+**OpenSSL implementation:** `EVP_KDF_fetch(NULL, "HKDF", NULL)` + `EVP_KDF_derive()` with
+`OSSL_KDF_PARAM_MODE` (integer: `EVP_KDF_HKDF_MODE_EXTRACT_AND_EXPAND` etc.),
+`OSSL_KDF_PARAM_DIGEST`, `OSSL_KDF_PARAM_KEY` (IKM from base key), `OSSL_KDF_PARAM_SALT`,
+`OSSL_KDF_PARAM_INFO`. Base key value retrieved via `key->getByteStringValue(CKA_VALUE)`.
 
-Useful for ML-DSA and SLH-DSA where signatures are large (2–5 KB) and typically known
-before the message data (e.g., in a signature header preceding the payload).
+| Component | File | Change |
+| --- | --- | --- |
+| Mechanism registry | `SoftHSM_slots.cpp:358` | `CKM_HKDF_DERIVE` registered |
+| C_DeriveKey handler | `SoftHSM_keygen.cpp:2194` | HKDF block between ECDH and symmetric derive dispatchers |
+| Constant | `softhsm.ts` | `CKM_HKDF_DERIVE = 0x402a`, `CKF_HKDF_SALT_NULL = 0x1`, `CKF_HKDF_SALT_DATA = 0x2` |
+| Helper | `softhsm.ts` | `hsm_hkdf(M, hSession, baseKeyHandle, prf, bExtract, bExpand, salt?, info?, keyLen?)` |
+| Learning module | `hsmConstants.ts` | Added `ckm-hkdf-derive` entry |
 
-**Spec reference:** PKCS#11 v3.2 §5.17 (Signature verification with bound signature)
+**PRFs supported:** `CKM_SHA_1`, `CKM_SHA256`, `CKM_SHA384`, `CKM_SHA512`, `CKM_SHA3_256`, `CKM_SHA3_384`, `CKM_SHA3_512`.
+**Salt types supported:** `CKF_HKDF_SALT_NULL`, `CKF_HKDF_SALT_DATA`. (`CKF_HKDF_SALT_KEY` — not supported.)
+**Modes:** Extract-and-Expand, Extract-only, Expand-only (driven by `bExtract`/`bExpand` flags).
 
-### 2.5 G5 — Authenticated wrapping — 2 stubs (MEDIUM)
+**`CK_HKDF_PARAMS` layout in WASM (32 bytes):**
+- Offsets 0–1: `bExtract`, `bExpand` (CK_BBOOL, 1 byte each)
+- Offsets 2–3: padding (C struct alignment)
+- Offsets 4–31: `prfHashMechanism`, `ulSaltType`, `pSalt`, `ulSaltLen`, `hSaltKey`, `pInfo`, `ulInfoLen` (4 bytes each)
 
-**GitHub issue:** #20
+---
 
-New in v3.2: AEAD-protected key wrapping with authentication data, distinct from
-the existing `C_WrapKey` + `CKM_AES_GCM` combination.
+## 2. Previously Resolved Gaps (v1 list, Phase 0–6)
 
-| Function | `main.cpp` line | Description |
-|---|---|---|
-| `C_WrapKeyAuthenticated` | 1743 | Wrap key with AEAD authentication tag |
-| `C_UnwrapKeyAuthenticated` | 1752 | Unwrap and verify authentication tag |
-
-**Spec reference:** PKCS#11 v3.2 §5.22 (Authenticated key wrapping)
-
-### 2.6 G6 — v3.0 session management — 2 stubs (LOW)
-
-**GitHub issue:** #21
-
-These were listed as MEDIUM in the Phase 1 gap analysis but were not implemented.
-
-| Function | `main.cpp` line | Description |
-|---|---|---|
-| `C_LoginUser` | 1436 | Login with explicit username string (v3.0 extension to `C_Login`) |
-| `C_SessionCancel` | 1445 | Cancel an in-progress multi-part operation on a session |
-
-**Spec reference:** PKCS#11 v3.2 §5.6 (Session management)
+All 50 gaps from the v1 baseline remain resolved. Closed GitHub issues: #8–#22.
+See v2 document section §1 for the complete list.
 
 ---
 
 ## 3. Explicitly Out of Scope
 
-### 3.1 Async operations — G7
+### 3.1 G7 — Async operations
 
-`C_AsyncComplete` (`main.cpp:1720`), `C_AsyncGetID` (`main.cpp:1726`), `C_AsyncJoin` (`main.cpp:1732`)
+`C_AsyncComplete` (`main.cpp:1812`), `C_AsyncGetID` (`main.cpp:1818`), `C_AsyncJoin` (`main.cpp:1824`)
 
-Requires a separate `CKF_ASYNC_SESSION` session mode, a promise/future-like state machine,
-and thread-safe session state. No current PQC tooling requires this. Omission is acceptable
-per PKCS#11 v3.2 §3.4 which marks async as optional when not advertised.
+Return `CKR_FUNCTION_NOT_SUPPORTED`. Requires `CKF_ASYNC_SESSION` mode and thread-safe
+promise-based state machine. No PQC tooling requires this. Omission is acceptable per
+PKCS#11 v3.2 §3.4 which marks async as optional when not advertised.
 
-### 3.2 Recovery and combined operations — G8
+### 3.2 G8 — Recovery and combined operations
 
 `C_SignRecoverInit`, `C_SignRecover` (`SoftHSM_sign.cpp:1181, 1194`)
-`C_VerifyRecoverInit`, `C_VerifyRecover` (`SoftHSM_sign.cpp:2210, 2223`)
-`C_DigestEncryptUpdate`, `C_DecryptDigestUpdate`, `C_SignEncryptUpdate`, `C_DecryptVerifyUpdate` (`SoftHSM_sign.cpp:2238–2283`)
+`C_VerifyRecoverInit`, `C_VerifyRecover` (`SoftHSM_sign.cpp:2790, 2803`)
+`C_DigestEncryptUpdate`, `C_DecryptDigestUpdate`, `C_SignEncryptUpdate`, `C_DecryptVerifyUpdate`
+(`SoftHSM_sign.cpp:2818–2875`)
 
-These are optional combined/recovery operations defined in PKCS#11 v2.0. SoftHSM2 v2.7.0
-also omits them. No PQC algorithm requires them. Not tracked as issues.
+Return `CKR_FUNCTION_NOT_SUPPORTED`. Optional combined/recovery operations from PKCS#11 v2.0.
+SoftHSM2 v2.7.0 also omits them. No PQC algorithm requires them.
 
-### 3.3 Stateful hash-based signatures (HSS, XMSS/XMSSMT)
+### 3.3 G9 — Session validation flags (v3.2)
 
-`CKK_HSS` (`0x00000046UL`), `CKK_XMSS` (`0x00000047UL`), `CKK_XMSSMT` (`0x00000048UL`)
-`CKM_HSS_KEY_PAIR_GEN`, `CKM_HSS`, `CKM_XMSS_KEY_PAIR_GEN`, `CKM_XMSSMT_KEY_PAIR_GEN`,
-`CKM_XMSS`, `CKM_XMSSMT`
+`C_GetSessionValidationFlags` (`main.cpp:1802`) returns `CKR_FUNCTION_NOT_SUPPORTED`.
+New in v3.2 §5.22. Not required for PQC operations.
 
-OpenSSL 3.x does not natively support HSS, XMSS, or XMSSMT. These require liboqs or
-a specialized provider. The `CKA_HSS_KEYS_REMAINING` attribute (stateful signature counter)
-adds additional object-store complexity. Out of scope until OpenSSL adds native support.
+### 3.4 G10 — Stateful hash-based signatures (HSS/XMSS/XMSSMT)
 
----
+`CKK_HSS`, `CKK_XMSS`, `CKK_XMSSMT` and their mechanisms are defined in PKCS#11 v3.2 headers
+but are out of scope because OpenSSL 3.x does not natively support these algorithms.
+Would require liboqs integration or a specialized provider — contradicts the OpenSSL-only
+backend design of softhsmv3. Deferred pending OpenSSL native support.
 
-## 4. Implementation Guidance for G1 (Priority)
+### 3.5 G11 — Session-state serialization
 
-G1 is the only BLOCKER and has the most straightforward implementation path since
-the infrastructure is already proven by ML-DSA hash variants.
+`C_GetOperationState` and `C_SetOperationState` (`SoftHSM_sessions.cpp:125, 140`)
+return `CKR_FUNCTION_NOT_SUPPORTED`. Not relevant for PQC operations.
 
-### 4.1 Step 1 — Register in `prepareSupportedMechanisms()`
+### 3.6 G-DA-X — CKM_RIPEMD160 (WASM build constraint)
 
-`src/lib/SoftHSM_slots.cpp`, after the existing ML-DSA block (~line 412):
+`CKM_RIPEMD160` (`0x00000240`) — defined in PKCS#11 v3.2 (marked "Historical").
 
-```cpp
-// SLH-DSA pre-hash variants (FIPS 205, PKCS#11 v3.2 §6.x)
-addMechanism(CKM_HASH_SLH_DSA,         CKF_SIGN|CKF_VERIFY, 0, 0);
-addMechanism(CKM_HASH_SLH_DSA_SHA224,  CKF_SIGN|CKF_VERIFY, 0, 0);
-addMechanism(CKM_HASH_SLH_DSA_SHA256,  CKF_SIGN|CKF_VERIFY, 0, 0);
-addMechanism(CKM_HASH_SLH_DSA_SHA384,  CKF_SIGN|CKF_VERIFY, 0, 0);
-addMechanism(CKM_HASH_SLH_DSA_SHA512,  CKF_SIGN|CKF_VERIFY, 0, 0);
-addMechanism(CKM_HASH_SLH_DSA_SHA3_224,CKF_SIGN|CKF_VERIFY, 0, 0);
-addMechanism(CKM_HASH_SLH_DSA_SHA3_256,CKF_SIGN|CKF_VERIFY, 0, 0);
-addMechanism(CKM_HASH_SLH_DSA_SHA3_384,CKF_SIGN|CKF_VERIFY, 0, 0);
-addMechanism(CKM_HASH_SLH_DSA_SHA3_512,CKF_SIGN|CKF_VERIFY, 0, 0);
-addMechanism(CKM_HASH_SLH_DSA_SHAKE128,CKF_SIGN|CKF_VERIFY, 0, 0);
-addMechanism(CKM_HASH_SLH_DSA_SHAKE256,CKF_SIGN|CKF_VERIFY, 0, 0);
-```
+**Blocker:** The OpenSSL WASM build (`scripts/build-openssl-wasm.sh`) uses `no-module` which
+disables the OpenSSL legacy provider. RIPEMD-160 lives in the legacy provider and is not
+accessible in the WASM build. Enabling it would require adding `enable-legacy` to the WASM
+build flags and verifying size impact (~+50 KB estimated). The Digital Assets module currently
+computes Bitcoin HASH160 via `@noble/hashes/ripemd160` client-side.
 
-### 4.2 Step 2 — Dispatch in sign/verify
-
-`src/lib/SoftHSM_sign.cpp`, in `AsymSignInit()` and `AsymVerifyInit()`, mirror the
-existing `CKM_HASH_ML_DSA_*` case blocks substituting:
-
-- `CKM_HASH_SLH_DSA_*` mechanism constants
-- `AsymMech::SLHDSA` (or introduce `AsymMech::SLHDSAHash` if needed)
-- `SLHDSAParameters` for context extraction
-
-Verify that OpenSSL's `slh-dsa-*` EVP keys accept the `OSSL_PARAM_utf8_string("digest", ...)`
-parameter for pre-hash mode (same as ML-DSA `HashID` param pattern).
-
-### 4.3 Step 3 — Tests
-
-Add `CKM_HASH_SLH_DSA_SHA256` to the `SignVerifyTests` battery in `src/lib/test/`.
-Mirror the existing `ML_DSA_44_HASH_SHA256` test structure.
+**Decision:** Deferred. No `no-module` removal planned until WASM size budget allows.
 
 ---
 
-## 5. OpenSSL 3.6 Algorithm Support Reference
+## 4. OpenSSL 3.6 Algorithm Support Reference
 
-Unchanged from v1. All in-scope algorithms supported natively via EVP_PKEY in OpenSSL 3.3+.
+All in-scope algorithms are supported natively via EVP_PKEY in OpenSSL 3.3+ (3.6 for full set).
 
-| Algorithm | Parameter sets | EVP_PKEY name pattern |
-|---|---|---|
-| ML-KEM | 512, 768, 1024 | `"mlkem512"`, `"mlkem768"`, `"mlkem1024"` |
-| ML-DSA | 44, 65, 87 | `"ml-dsa-44"`, `"ml-dsa-65"`, `"ml-dsa-87"` |
-| SLH-DSA | 12 variants | `"slh-dsa-sha2-128s"` … `"slh-dsa-shake-256f"` |
+| Algorithm | Parameter sets | EVP_PKEY name pattern | Minimum OpenSSL |
+| --- | --- | --- | --- |
+| ML-KEM | 512, 768, 1024 | `"mlkem512"`, `"mlkem768"`, `"mlkem1024"` | 3.3 |
+| ML-DSA | 44, 65, 87 | `"ml-dsa-44"`, `"ml-dsa-65"`, `"ml-dsa-87"` | 3.3 |
+| SLH-DSA | 12 variants | `"slh-dsa-sha2-128s"` … `"slh-dsa-shake-256f"` | 3.5 (full in 3.6) |
 
-> **SHAKE pre-hash note:** Verify that OpenSSL 3.6 exposes XOF digest names
-> (`"shake128"`, `"shake256"`) for the `OSSL_PARAM` digest parameter before
-> implementing `CKM_HASH_SLH_DSA_SHAKE128` / `CKM_HASH_SLH_DSA_SHAKE256`.
+Pre-hash mode: `OSSL_PARAM_utf8_string("digest", "sha256")` pattern (same for ML-DSA and SLH-DSA).
+SHAKE XOF pre-hash: verified working via `"shake128"`/`"shake256"` digest names in OpenSSL 3.6.
 
 ---
 
-## 6. Gap–Issue Mapping
+## 5. Playground Integration Status (pqc-timeline-app)
 
-| Gap | Title | Issue | Priority |
-|---|---|---|---|
-| G1 | `CKM_HASH_SLH_DSA*` — 13 pre-hash mechanism variants | #16 | BLOCKER |
-| G2 | Streaming message sign/verify (4 stubs) | #17 | HIGH |
-| G3 | Message Encrypt/Decrypt API (10 stubs) | #18 | HIGH |
-| G4 | `C_VerifySignature*` — pre-bound signature verification (4 stubs) | #19 | MEDIUM |
-| G5 | `C_WrapKeyAuthenticated` / `C_UnwrapKeyAuthenticated` | #20 | MEDIUM |
-| G6 | `C_LoginUser` / `C_SessionCancel` | #21 | LOW |
+As of 2026-03-04 (v4):
+
+| Feature | `softhsm.ts` | SoftHsmTab UI |
+| --- | --- | --- |
+| ML-KEM key gen, encap, decap | ✓ | ✓ |
+| ML-DSA key gen, pure sign/verify | ✓ | ✓ |
+| ML-DSA pre-hash (all 10 variants) | ✓ (expanded) | ✓ (FilterDropdown, all 10 variants) |
+| SLH-DSA key gen, pure sign/verify | ✓ | ✓ |
+| SLH-DSA pre-hash (all 10 variants) | ✓ (new) | ✓ (FilterDropdown, all 10 variants) |
+| RSA, ECDSA, EdDSA | ✓ | ✓ |
+| ECDSA-SHA3-224/256/384/512 (G-DA2) | ✓ constants | Not wired (spec completeness) |
+| AES-GCM, AES-CMAC, key wrap | ✓ | ✓ |
+| PBKDF2 / CKM_PKCS5_PBKD2 (G-DA1) | ✓ `hsm_pbkdf2()` helper | Not wired (low priority) |
+| Streaming sign/verify (G2) | softhsmv3 ✓ | Not wired (low priority) |
+| Per-message encrypt/decrypt (G3) | softhsmv3 ✓ | Not wired (low priority) |
+| Pre-bound signature verify (G4) | softhsmv3 ✓ | Not wired (low priority) |
+| Authenticated key wrap (G5) | softhsmv3 ✓ | Not wired (low priority) |

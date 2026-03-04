@@ -672,6 +672,26 @@ CK_RV SoftHSM::AsymSignInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechan
 			bAllowMultiPartOp = false;
 			isECDSA = true;
 			break;
+		case CKM_ECDSA_SHA3_224:
+			mechanism = AsymMech::ECDSA_SHA3_224;
+			bAllowMultiPartOp = false;
+			isECDSA = true;
+			break;
+		case CKM_ECDSA_SHA3_256:
+			mechanism = AsymMech::ECDSA_SHA3_256;
+			bAllowMultiPartOp = false;
+			isECDSA = true;
+			break;
+		case CKM_ECDSA_SHA3_384:
+			mechanism = AsymMech::ECDSA_SHA3_384;
+			bAllowMultiPartOp = false;
+			isECDSA = true;
+			break;
+		case CKM_ECDSA_SHA3_512:
+			mechanism = AsymMech::ECDSA_SHA3_512;
+			bAllowMultiPartOp = false;
+			isECDSA = true;
+			break;
 #endif
 #ifdef WITH_EDDSA
 		case CKM_EDDSA:
@@ -1672,6 +1692,26 @@ CK_RV SoftHSM::AsymVerifyInit(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMech
 			break;
 		case CKM_ECDSA_SHA512:
 			mechanism = AsymMech::ECDSA_SHA512;
+			bAllowMultiPartOp = false;
+			isECDSA = true;
+			break;
+		case CKM_ECDSA_SHA3_224:
+			mechanism = AsymMech::ECDSA_SHA3_224;
+			bAllowMultiPartOp = false;
+			isECDSA = true;
+			break;
+		case CKM_ECDSA_SHA3_256:
+			mechanism = AsymMech::ECDSA_SHA3_256;
+			bAllowMultiPartOp = false;
+			isECDSA = true;
+			break;
+		case CKM_ECDSA_SHA3_384:
+			mechanism = AsymMech::ECDSA_SHA3_384;
+			bAllowMultiPartOp = false;
+			isECDSA = true;
+			break;
+		case CKM_ECDSA_SHA3_512:
+			mechanism = AsymMech::ECDSA_SHA3_512;
 			bAllowMultiPartOp = false;
 			isECDSA = true;
 			break;

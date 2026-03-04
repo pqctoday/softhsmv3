@@ -105,11 +105,15 @@ bool OSSLECDSA::sign(PrivateKey* privateKey, const ByteString& dataToSign,
 	{
 		switch (mechanism)
 		{
-			case AsymMech::ECDSA_SHA1:   md = EVP_sha1();   break;
-			case AsymMech::ECDSA_SHA224: md = EVP_sha224(); break;
-			case AsymMech::ECDSA_SHA256: md = EVP_sha256(); break;
-			case AsymMech::ECDSA_SHA384: md = EVP_sha384(); break;
-			case AsymMech::ECDSA_SHA512: md = EVP_sha512(); break;
+			case AsymMech::ECDSA_SHA1:     md = EVP_sha1();     break;
+			case AsymMech::ECDSA_SHA224:   md = EVP_sha224();   break;
+			case AsymMech::ECDSA_SHA256:   md = EVP_sha256();   break;
+			case AsymMech::ECDSA_SHA384:   md = EVP_sha384();   break;
+			case AsymMech::ECDSA_SHA512:   md = EVP_sha512();   break;
+			case AsymMech::ECDSA_SHA3_224: md = EVP_sha3_224(); break;
+			case AsymMech::ECDSA_SHA3_256: md = EVP_sha3_256(); break;
+			case AsymMech::ECDSA_SHA3_384: md = EVP_sha3_384(); break;
+			case AsymMech::ECDSA_SHA3_512: md = EVP_sha3_512(); break;
 			default:
 				ERROR_MSG("Invalid mechanism supplied (%i)", mechanism);
 				return false;
@@ -242,11 +246,15 @@ bool OSSLECDSA::verify(PublicKey* publicKey, const ByteString& originalData,
 	{
 		switch (mechanism)
 		{
-			case AsymMech::ECDSA_SHA1:   md = EVP_sha1();   break;
-			case AsymMech::ECDSA_SHA224: md = EVP_sha224(); break;
-			case AsymMech::ECDSA_SHA256: md = EVP_sha256(); break;
-			case AsymMech::ECDSA_SHA384: md = EVP_sha384(); break;
-			case AsymMech::ECDSA_SHA512: md = EVP_sha512(); break;
+			case AsymMech::ECDSA_SHA1:     md = EVP_sha1();     break;
+			case AsymMech::ECDSA_SHA224:   md = EVP_sha224();   break;
+			case AsymMech::ECDSA_SHA256:   md = EVP_sha256();   break;
+			case AsymMech::ECDSA_SHA384:   md = EVP_sha384();   break;
+			case AsymMech::ECDSA_SHA512:   md = EVP_sha512();   break;
+			case AsymMech::ECDSA_SHA3_224: md = EVP_sha3_224(); break;
+			case AsymMech::ECDSA_SHA3_256: md = EVP_sha3_256(); break;
+			case AsymMech::ECDSA_SHA3_384: md = EVP_sha3_384(); break;
+			case AsymMech::ECDSA_SHA3_512: md = EVP_sha3_512(); break;
 			default:
 				ERROR_MSG("Invalid mechanism supplied (%i)", mechanism);
 				return false;

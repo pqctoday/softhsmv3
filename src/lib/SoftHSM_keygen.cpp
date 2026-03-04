@@ -74,11 +74,45 @@
 #include "OSSLMLKEMPublicKey.h"
 #include "OSSLMLKEMPrivateKey.h"
 #include "OSSLMLKEM.h"
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#include <openssl/kdf.h>
+#include <openssl/core_names.h>
+#include <openssl/params.h>
 #include "cryptoki.h"
 #include "P11Attributes.h"
 #include "P11Objects.h"
 #include "SlotManager.h"
 #include "odd.h"
+
+// KDF helpers: map PKCS#11 v3.2 CKD_* identifiers to OpenSSL digest names (for X9.63 KDF)
+static const char* ckdToDigestName(CK_ULONG kdf)
+{
+	switch (kdf)
+	{
+		case CKD_SHA1_KDF:   return "SHA-1";
+		case CKD_SHA256_KDF: return "SHA2-256";
+		case CKD_SHA384_KDF: return "SHA2-384";
+		case CKD_SHA512_KDF: return "SHA2-512";
+		default:             return nullptr;
+	}
+}
+
+// KDF helper: map PKCS#11 v3.2 CKM_SHA* mechanism → OpenSSL digest name (for HKDF PRF)
+static const char* ckmToDigestName(CK_MECHANISM_TYPE mech)
+{
+	switch (mech)
+	{
+		case CKM_SHA_1:    return "SHA-1";
+		case CKM_SHA256:   return "SHA2-256";
+		case CKM_SHA384:   return "SHA2-384";
+		case CKM_SHA512:   return "SHA2-512";
+		case CKM_SHA3_256: return "SHA3-256";
+		case CKM_SHA3_384: return "SHA3-384";
+		case CKM_SHA3_512: return "SHA3-512";
+		default:           return nullptr;
+	}
+}
 
 // Generate a secret key or a domain parameter set using the specified mechanism
 CK_RV SoftHSM::C_GenerateKey(CK_SESSION_HANDLE hSession, CK_MECHANISM_PTR pMechanism, CK_ATTRIBUTE_PTR pTemplate, CK_ULONG ulCount, CK_OBJECT_HANDLE_PTR phKey)
@@ -1894,6 +1928,7 @@ CK_RV SoftHSM::C_DeriveKey
 	{
 		case CKM_ECDH1_DERIVE:
 #endif
+		case CKM_PKCS5_PBKD2:
 		case CKM_AES_ECB_ENCRYPT_DATA:
 		case CKM_AES_CBC_ENCRYPT_DATA:
 		case CKM_CONCATENATE_DATA_AND_BASE:
@@ -1904,6 +1939,165 @@ CK_RV SoftHSM::C_DeriveKey
 		default:
 			ERROR_MSG("Invalid mechanism");
 			return CKR_MECHANISM_INVALID;
+	}
+
+	// Handle CKM_PKCS5_PBKD2 early — password is in params; no base key required
+	if (pMechanism->mechanism == CKM_PKCS5_PBKD2)
+	{
+		if (pMechanism->pParameter == NULL_PTR ||
+		    pMechanism->ulParameterLen != sizeof(CK_PKCS5_PBKD2_PARAMS2))
+		{
+			ERROR_MSG("CKM_PKCS5_PBKD2 requires CK_PKCS5_PBKD2_PARAMS2");
+			return CKR_ARGUMENTS_BAD;
+		}
+		CK_PKCS5_PBKD2_PARAMS2* pbkdp = (CK_PKCS5_PBKD2_PARAMS2*)pMechanism->pParameter;
+		if (pbkdp->saltSource != CKZ_SALT_SPECIFIED)
+		{
+			ERROR_MSG("CKM_PKCS5_PBKD2: only CKZ_SALT_SPECIFIED is supported");
+			return CKR_MECHANISM_PARAM_INVALID;
+		}
+		if (pbkdp->pPassword == NULL_PTR || pbkdp->iterations == 0)
+		{
+			ERROR_MSG("CKM_PKCS5_PBKD2: invalid password or iteration count");
+			return CKR_ARGUMENTS_BAD;
+		}
+
+		// Map PRF to OpenSSL digest
+		const EVP_MD* pbkdMd = NULL;
+		switch (pbkdp->prf)
+		{
+			case CKP_PKCS5_PBKD2_HMAC_SHA1:   pbkdMd = EVP_sha1();   break;
+			case CKP_PKCS5_PBKD2_HMAC_SHA224:  pbkdMd = EVP_sha224(); break;
+			case CKP_PKCS5_PBKD2_HMAC_SHA256:  pbkdMd = EVP_sha256(); break;
+			case CKP_PKCS5_PBKD2_HMAC_SHA384:  pbkdMd = EVP_sha384(); break;
+			case CKP_PKCS5_PBKD2_HMAC_SHA512:  pbkdMd = EVP_sha512(); break;
+			default:
+				ERROR_MSG("CKM_PKCS5_PBKD2: unsupported PRF 0x%08lx", (unsigned long)pbkdp->prf);
+				return CKR_MECHANISM_PARAM_INVALID;
+		}
+
+		// Extract CKA_VALUE_LEN from template
+		CK_ULONG pbkdKeyLen = 0;
+		for (CK_ULONG i = 0; i < ulCount; i++)
+		{
+			if (pTemplate[i].type == CKA_VALUE_LEN &&
+			    pTemplate[i].pValue != NULL_PTR &&
+			    pTemplate[i].ulValueLen == sizeof(CK_ULONG))
+			{
+				pbkdKeyLen = *(CK_ULONG*)pTemplate[i].pValue;
+				break;
+			}
+		}
+		if (pbkdKeyLen == 0 || pbkdKeyLen > 512)
+		{
+			ERROR_MSG("CKM_PKCS5_PBKD2: CKA_VALUE_LEN missing or out of range");
+			return CKR_TEMPLATE_INCOMPLETE;
+		}
+
+		// Derive the key material via PBKDF2
+		ByteString pbkdKey;
+		pbkdKey.resize(pbkdKeyLen);
+		if (PKCS5_PBKDF2_HMAC(
+		        (const char*)pbkdp->pPassword, (int)pbkdp->ulPasswordLen,
+		        (const unsigned char*)pbkdp->pSaltSourceData, (int)pbkdp->ulSaltSourceDataLen,
+		        (int)pbkdp->iterations, pbkdMd, (int)pbkdKeyLen,
+		        pbkdKey.byte_str()) != 1)
+		{
+			ERROR_MSG("PKCS5_PBKDF2_HMAC failed (0x%08X)", ERR_get_error());
+			return CKR_FUNCTION_FAILED;
+		}
+
+		// Get the token for object storage
+		Token* pbkdToken = session->getToken();
+		if (pbkdToken == NULL) return CKR_GENERAL_ERROR;
+
+		// Extract storage flags from template
+		CK_BBOOL pbkdOnToken = CK_FALSE;
+		CK_BBOOL pbkdPrivate = CK_TRUE;
+		for (CK_ULONG i = 0; i < ulCount; i++)
+		{
+			if (pTemplate[i].type == CKA_TOKEN && pTemplate[i].pValue != NULL_PTR)
+				pbkdOnToken = *(CK_BBOOL*)pTemplate[i].pValue;
+			if (pTemplate[i].type == CKA_PRIVATE && pTemplate[i].pValue != NULL_PTR)
+				pbkdPrivate = *(CK_BBOOL*)pTemplate[i].pValue;
+		}
+
+		// Check write authorization
+		CK_RV pbkdRv = haveWrite(session->getState(), pbkdOnToken, pbkdPrivate);
+		if (pbkdRv != CKR_OK)
+		{
+			if (pbkdRv == CKR_USER_NOT_LOGGED_IN)
+				INFO_MSG("User is not authorized");
+			if (pbkdRv == CKR_SESSION_READ_ONLY)
+				INFO_MSG("Session is read-only");
+			return pbkdRv;
+		}
+
+		// Build object attribute list
+		const CK_ULONG pbkdMaxAttribs = 32;
+		CK_OBJECT_CLASS pbkdObjClass = CKO_SECRET_KEY;
+		CK_KEY_TYPE pbkdKeyType = CKK_GENERIC_SECRET;
+		CK_ATTRIBUTE pbkdAttribs[pbkdMaxAttribs] = {
+			{ CKA_CLASS,    &pbkdObjClass, sizeof(pbkdObjClass) },
+			{ CKA_TOKEN,    &pbkdOnToken,  sizeof(pbkdOnToken)  },
+			{ CKA_PRIVATE,  &pbkdPrivate,  sizeof(pbkdPrivate)  },
+			{ CKA_KEY_TYPE, &pbkdKeyType,  sizeof(pbkdKeyType)  },
+		};
+		CK_ULONG pbkdAttribsCount = 4;
+		for (CK_ULONG i = 0; i < ulCount && pbkdAttribsCount < pbkdMaxAttribs; i++)
+		{
+			switch (pTemplate[i].type)
+			{
+				case CKA_CLASS:
+				case CKA_TOKEN:
+				case CKA_PRIVATE:
+				case CKA_KEY_TYPE:
+				case CKA_CHECK_VALUE:
+					continue;
+				default:
+					pbkdAttribs[pbkdAttribsCount++] = pTemplate[i];
+					break;
+			}
+		}
+
+		pbkdRv = CreateObject(hSession, pbkdAttribs, pbkdAttribsCount, phKey, OBJECT_OP_GENERATE);
+		if (pbkdRv != CKR_OK) return pbkdRv;
+
+		OSObject* pbkdObj = (OSObject*)handleManager->getObject(*phKey);
+		if (pbkdObj == NULL_PTR || !pbkdObj->isValid()) return CKR_FUNCTION_FAILED;
+		if (!pbkdObj->startTransaction()) return CKR_FUNCTION_FAILED;
+
+		bool pbkdOK = true;
+		pbkdOK = pbkdOK && pbkdObj->setAttribute(CKA_LOCAL, false);
+		CK_ULONG pbkdGenMech = (CK_ULONG)CKM_PKCS5_PBKD2;
+		pbkdOK = pbkdOK && pbkdObj->setAttribute(CKA_KEY_GEN_MECHANISM, pbkdGenMech);
+		bool pbkdAlwaysSens = pbkdObj->getBooleanValue(CKA_SENSITIVE, false);
+		pbkdOK = pbkdOK && pbkdObj->setAttribute(CKA_ALWAYS_SENSITIVE, pbkdAlwaysSens);
+		bool pbkdNeverExtract = !pbkdObj->getBooleanValue(CKA_EXTRACTABLE, false);
+		pbkdOK = pbkdOK && pbkdObj->setAttribute(CKA_NEVER_EXTRACTABLE, pbkdNeverExtract);
+
+		SymmetricKey pbkdSymKey;
+		pbkdSymKey.setKeyBits(pbkdKey);
+		pbkdSymKey.setBitLen(pbkdKeyLen);
+		ByteString pbkdValue;
+		if (pbkdPrivate)
+			pbkdToken->encrypt(pbkdSymKey.getKeyBits(), pbkdValue);
+		else
+			pbkdValue = pbkdSymKey.getKeyBits();
+		pbkdOK = pbkdOK && pbkdObj->setAttribute(CKA_VALUE, pbkdValue);
+
+		if (pbkdOK)
+			pbkdObj->commitTransaction();
+		else
+			pbkdObj->abortTransaction();
+
+		if (!pbkdOK)
+		{
+			handleManager->destroyObject(*phKey);
+			*phKey = CK_INVALID_HANDLE;
+			return CKR_FUNCTION_FAILED;
+		}
+		return CKR_OK;
 	}
 
 	// Get the token
@@ -1996,6 +2190,197 @@ CK_RV SoftHSM::C_DeriveKey
 			return CKR_KEY_TYPE_INCONSISTENT;
 	}
 #endif
+
+	// HKDF derive (PKCS#11 v3.0+ §2.43, CKM_HKDF_DERIVE = 0x0000402a)
+	if (pMechanism->mechanism == CKM_HKDF_DERIVE)
+	{
+		if (pMechanism->pParameter == NULL_PTR ||
+		    pMechanism->ulParameterLen != sizeof(CK_HKDF_PARAMS))
+		{
+			ERROR_MSG("CKM_HKDF_DERIVE requires CK_HKDF_PARAMS");
+			return CKR_ARGUMENTS_BAD;
+		}
+		CK_HKDF_PARAMS* hkdfp = (CK_HKDF_PARAMS*)pMechanism->pParameter;
+
+		if (!hkdfp->bExtract && !hkdfp->bExpand)
+		{
+			ERROR_MSG("CKM_HKDF_DERIVE: at least one of bExtract/bExpand must be true");
+			return CKR_MECHANISM_PARAM_INVALID;
+		}
+		if (hkdfp->ulSaltType == CKF_HKDF_SALT_KEY)
+		{
+			ERROR_MSG("CKM_HKDF_DERIVE: CKF_HKDF_SALT_KEY not supported");
+			return CKR_MECHANISM_PARAM_INVALID;
+		}
+
+		// Map PRF hash mechanism to OpenSSL digest name
+		const char* hkdfDigest = ckmToDigestName(hkdfp->prfHashMechanism);
+		if (hkdfDigest == nullptr)
+		{
+			ERROR_MSG("CKM_HKDF_DERIVE: unsupported PRF 0x%08lx", (unsigned long)hkdfp->prfHashMechanism);
+			return CKR_MECHANISM_PARAM_INVALID;
+		}
+
+		// Determine output key length from template CKA_VALUE_LEN
+		CK_ULONG hkdfKeyLen = 0;
+		for (CK_ULONG i = 0; i < ulCount; i++)
+		{
+			if (pTemplate[i].type == CKA_VALUE_LEN &&
+			    pTemplate[i].pValue != NULL_PTR &&
+			    pTemplate[i].ulValueLen == sizeof(CK_ULONG))
+			{
+				hkdfKeyLen = *(CK_ULONG*)pTemplate[i].pValue;
+				break;
+			}
+		}
+		if (hkdfKeyLen == 0 || hkdfKeyLen > 512)
+		{
+			ERROR_MSG("CKM_HKDF_DERIVE: CKA_VALUE_LEN missing or out of range");
+			return CKR_TEMPLATE_INCOMPLETE;
+		}
+
+		// Retrieve base key IKM (decrypt if private)
+		ByteString hkdfIKM;
+		if (isKeyPrivate)
+		{
+			if (!token->decrypt(key->getByteStringValue(CKA_VALUE), hkdfIKM))
+				return CKR_GENERAL_ERROR;
+		}
+		else
+		{
+			hkdfIKM = key->getByteStringValue(CKA_VALUE);
+		}
+
+		// Determine HKDF mode
+		int hkdfMode;
+		if (hkdfp->bExtract && hkdfp->bExpand)
+			hkdfMode = EVP_KDF_HKDF_MODE_EXTRACT_AND_EXPAND;
+		else if (hkdfp->bExtract)
+			hkdfMode = EVP_KDF_HKDF_MODE_EXTRACT_ONLY;
+		else
+			hkdfMode = EVP_KDF_HKDF_MODE_EXPAND_ONLY;
+
+		// Derive via HKDF
+		ByteString hkdfOut;
+		hkdfOut.resize(hkdfKeyLen);
+		{
+			EVP_KDF* hkdfAlgo = EVP_KDF_fetch(NULL, "HKDF", NULL);
+			if (hkdfAlgo == NULL)
+			{
+				ERROR_MSG("EVP_KDF_fetch HKDF failed: 0x%08X", ERR_get_error());
+				return CKR_FUNCTION_FAILED;
+			}
+			EVP_KDF_CTX* hkctx = EVP_KDF_CTX_new(hkdfAlgo);
+			EVP_KDF_free(hkdfAlgo);
+			if (hkctx == NULL)
+			{
+				ERROR_MSG("EVP_KDF_CTX_new HKDF failed");
+				return CKR_FUNCTION_FAILED;
+			}
+
+			OSSL_PARAM hkdfParams[6];
+			int hpi = 0;
+			hkdfParams[hpi++] = OSSL_PARAM_construct_int(OSSL_KDF_PARAM_MODE, &hkdfMode);
+			hkdfParams[hpi++] = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST,
+			                        const_cast<char*>(hkdfDigest), 0);
+			hkdfParams[hpi++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY,
+			                        hkdfIKM.byte_str(), hkdfIKM.size());
+			if (hkdfp->ulSaltType == CKF_HKDF_SALT_DATA &&
+			    hkdfp->pSalt != NULL_PTR && hkdfp->ulSaltLen > 0)
+				hkdfParams[hpi++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT,
+				                        hkdfp->pSalt, (size_t)hkdfp->ulSaltLen);
+			if (hkdfp->pInfo != NULL_PTR && hkdfp->ulInfoLen > 0)
+				hkdfParams[hpi++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO,
+				                        hkdfp->pInfo, (size_t)hkdfp->ulInfoLen);
+			hkdfParams[hpi] = OSSL_PARAM_construct_end();
+
+			int hkdfRet = EVP_KDF_derive(hkctx, hkdfOut.byte_str(), hkdfKeyLen, hkdfParams);
+			EVP_KDF_CTX_free(hkctx);
+			if (hkdfRet <= 0)
+			{
+				ERROR_MSG("EVP_KDF_derive HKDF failed: 0x%08X", ERR_get_error());
+				return CKR_FUNCTION_FAILED;
+			}
+		}
+
+		// Build output key object (mirror PBKDF2 pattern)
+		CK_BBOOL hkdfOnToken = CK_FALSE;
+		CK_BBOOL hkdfPrivate = CK_TRUE;
+		for (CK_ULONG i = 0; i < ulCount; i++)
+		{
+			if (pTemplate[i].type == CKA_TOKEN && pTemplate[i].pValue != NULL_PTR)
+				hkdfOnToken = *(CK_BBOOL*)pTemplate[i].pValue;
+			if (pTemplate[i].type == CKA_PRIVATE && pTemplate[i].pValue != NULL_PTR)
+				hkdfPrivate = *(CK_BBOOL*)pTemplate[i].pValue;
+		}
+
+		CK_RV hkdfRv = haveWrite(session->getState(), hkdfOnToken, hkdfPrivate);
+		if (hkdfRv != CKR_OK)
+		{
+			if (hkdfRv == CKR_USER_NOT_LOGGED_IN) INFO_MSG("User is not authorized");
+			if (hkdfRv == CKR_SESSION_READ_ONLY)  INFO_MSG("Session is read-only");
+			return hkdfRv;
+		}
+
+		const CK_ULONG hkdfMaxAttribs = 32;
+		CK_OBJECT_CLASS hkdfObjClass = CKO_SECRET_KEY;
+		CK_KEY_TYPE     hkdfKeyType  = CKK_GENERIC_SECRET;
+		CK_ATTRIBUTE hkdfAttribs[hkdfMaxAttribs] = {
+			{ CKA_CLASS,    &hkdfObjClass, sizeof(hkdfObjClass) },
+			{ CKA_TOKEN,    &hkdfOnToken,  sizeof(hkdfOnToken)  },
+			{ CKA_PRIVATE,  &hkdfPrivate,  sizeof(hkdfPrivate)  },
+			{ CKA_KEY_TYPE, &hkdfKeyType,  sizeof(hkdfKeyType)  },
+		};
+		CK_ULONG hkdfAttribsCount = 4;
+		for (CK_ULONG i = 0; i < ulCount && hkdfAttribsCount < hkdfMaxAttribs; i++)
+		{
+			switch (pTemplate[i].type)
+			{
+				case CKA_CLASS: case CKA_TOKEN: case CKA_PRIVATE:
+				case CKA_KEY_TYPE: case CKA_CHECK_VALUE: continue;
+				default: hkdfAttribs[hkdfAttribsCount++] = pTemplate[i]; break;
+			}
+		}
+
+		hkdfRv = CreateObject(hSession, hkdfAttribs, hkdfAttribsCount, phKey, OBJECT_OP_GENERATE);
+		if (hkdfRv != CKR_OK) return hkdfRv;
+
+		OSObject* hkdfObj = (OSObject*)handleManager->getObject(*phKey);
+		if (hkdfObj == NULL_PTR || !hkdfObj->isValid()) return CKR_FUNCTION_FAILED;
+		if (!hkdfObj->startTransaction()) return CKR_FUNCTION_FAILED;
+
+		bool hkdfOK = true;
+		hkdfOK = hkdfOK && hkdfObj->setAttribute(CKA_LOCAL, false);
+		CK_ULONG hkdfGenMech = (CK_ULONG)CKM_HKDF_DERIVE;
+		hkdfOK = hkdfOK && hkdfObj->setAttribute(CKA_KEY_GEN_MECHANISM, hkdfGenMech);
+		bool hkdfAlwaysSens    = hkdfObj->getBooleanValue(CKA_SENSITIVE, false);
+		hkdfOK = hkdfOK && hkdfObj->setAttribute(CKA_ALWAYS_SENSITIVE, hkdfAlwaysSens);
+		bool hkdfNeverExtract  = !hkdfObj->getBooleanValue(CKA_EXTRACTABLE, false);
+		hkdfOK = hkdfOK && hkdfObj->setAttribute(CKA_NEVER_EXTRACTABLE, hkdfNeverExtract);
+
+		SymmetricKey hkdfSymKey;
+		hkdfSymKey.setKeyBits(hkdfOut);
+		hkdfSymKey.setBitLen(hkdfKeyLen * 8);
+		ByteString hkdfValue;
+		if (hkdfPrivate)
+			token->encrypt(hkdfSymKey.getKeyBits(), hkdfValue);
+		else
+			hkdfValue = hkdfSymKey.getKeyBits();
+		hkdfOK = hkdfOK && hkdfObj->setAttribute(CKA_VALUE, hkdfValue);
+
+		if (hkdfOK)
+			hkdfObj->commitTransaction();
+		else
+			hkdfObj->abortTransaction();
+
+		if (!hkdfOK)
+		{
+			handleManager->destroyObject(*phKey);
+			*phKey = CK_INVALID_HANDLE;
+			return CKR_FUNCTION_FAILED;
+		}
+		return CKR_OK;
+	}
 
 	// Derive symmetric secret
 	if (pMechanism->mechanism == CKM_AES_ECB_ENCRYPT_DATA ||
@@ -3546,16 +3931,23 @@ CK_RV SoftHSM::deriveECDH
 		DEBUG_MSG("pParameter must be of type CK_ECDH1_DERIVE_PARAMS");
 		return CKR_MECHANISM_PARAM_INVALID;
 	}
-	if (CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->kdf != CKD_NULL)
+	// Accept CKD_NULL and ANSI X9.63 KDF variants; reject all others (PKCS#11 v3.2 §2.3.5)
 	{
-		DEBUG_MSG("kdf must be CKD_NULL");
-		return CKR_MECHANISM_PARAM_INVALID;
-	}
-	if ((CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->ulSharedDataLen != 0) ||
-	    (CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->pSharedData != NULL_PTR))
-	{
-		DEBUG_MSG("there must be no shared data");
-		return CKR_MECHANISM_PARAM_INVALID;
+		CK_ULONG kdfCheck = CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->kdf;
+		if (kdfCheck != CKD_NULL && kdfCheck != CKD_SHA1_KDF &&
+		    kdfCheck != CKD_SHA256_KDF && kdfCheck != CKD_SHA384_KDF &&
+		    kdfCheck != CKD_SHA512_KDF)
+		{
+			DEBUG_MSG("Unsupported KDF type 0x%08lx", (unsigned long)kdfCheck);
+			return CKR_MECHANISM_PARAM_INVALID;
+		}
+		if (kdfCheck == CKD_NULL &&
+		    ((CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->ulSharedDataLen != 0) ||
+		     (CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->pSharedData != NULL_PTR)))
+		{
+			DEBUG_MSG("Shared data not allowed when kdf is CKD_NULL");
+			return CKR_MECHANISM_PARAM_INVALID;
+		}
 	}
 	if ((CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->ulPublicDataLen == 0) ||
 	    (CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->pPublicData == NULL_PTR))
@@ -3771,6 +4163,68 @@ CK_RV SoftHSM::deriveECDH
 			ByteString plainKCV;
 			ByteString kcv;
 
+			// Apply ANSI X9.63 KDF if requested (PKCS#11 v3.2 §2.3.5)
+			{
+				CK_ULONG kdf = CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->kdf;
+				if (kdf != CKD_NULL)
+				{
+					const char* digestName = ckdToDigestName(kdf);
+					if (digestName == nullptr)
+					{
+						DEBUG_MSG("ckdToDigestName: unknown KDF");
+						bOK = false;
+					}
+					else
+					{
+						CK_BYTE_PTR  pSharedData   = CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->pSharedData;
+						CK_ULONG ulSharedDataLen   = CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->ulSharedDataLen;
+						size_t kdfOutLen           = (byteLen > 0) ? byteLen : secretValue.size();
+						EVP_KDF* kdfAlgo = EVP_KDF_fetch(NULL, "X963KDF", NULL);
+						if (kdfAlgo == NULL)
+						{
+							DEBUG_MSG("EVP_KDF_fetch X963KDF failed: 0x%08X", ERR_get_error());
+							bOK = false;
+						}
+						else
+						{
+							EVP_KDF_CTX* kctx = EVP_KDF_CTX_new(kdfAlgo);
+							EVP_KDF_free(kdfAlgo);
+							if (kctx == NULL)
+							{
+								DEBUG_MSG("EVP_KDF_CTX_new failed");
+								bOK = false;
+							}
+							else
+							{
+								OSSL_PARAM kdfParams[4];
+								int pi = 0;
+								kdfParams[pi++] = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST,
+								                      const_cast<char*>(digestName), 0);
+								kdfParams[pi++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SECRET,
+								                      secretValue.byte_str(), secretValue.size());
+								if (pSharedData != NULL_PTR && ulSharedDataLen > 0)
+									kdfParams[pi++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO,
+									                      pSharedData, (size_t)ulSharedDataLen);
+								kdfParams[pi] = OSSL_PARAM_construct_end();
+								ByteString kdfOut;
+								kdfOut.resize(kdfOutLen);
+								if (EVP_KDF_derive(kctx, kdfOut.byte_str(), kdfOutLen, kdfParams) <= 0)
+								{
+									DEBUG_MSG("EVP_KDF_derive X963KDF failed: 0x%08X", ERR_get_error());
+									bOK = false;
+								}
+								else
+								{
+									secretValue = kdfOut;
+									checkValue  = false; // KCV not meaningful for KDF-derived keys
+								}
+								EVP_KDF_CTX_free(kctx);
+							}
+						}
+					}
+				}
+			}
+
 			// For generic and AES keys:
 			// default to return max size available.
 			if (byteLen == 0)
@@ -3895,16 +4349,23 @@ CK_RV SoftHSM::deriveEDDSA
 		DEBUG_MSG("pParameter must be of type CK_ECDH1_DERIVE_PARAMS");
 		return CKR_MECHANISM_PARAM_INVALID;
 	}
-	if (CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->kdf != CKD_NULL)
+	// Accept CKD_NULL and ANSI X9.63 KDF variants; reject all others (PKCS#11 v3.2 §2.3.5)
 	{
-		DEBUG_MSG("kdf must be CKD_NULL");
-		return CKR_MECHANISM_PARAM_INVALID;
-	}
-	if ((CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->ulSharedDataLen != 0) ||
-	    (CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->pSharedData != NULL_PTR))
-	{
-		DEBUG_MSG("there must be no shared data");
-		return CKR_MECHANISM_PARAM_INVALID;
+		CK_ULONG kdfCheck = CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->kdf;
+		if (kdfCheck != CKD_NULL && kdfCheck != CKD_SHA1_KDF &&
+		    kdfCheck != CKD_SHA256_KDF && kdfCheck != CKD_SHA384_KDF &&
+		    kdfCheck != CKD_SHA512_KDF)
+		{
+			DEBUG_MSG("Unsupported KDF type 0x%08lx", (unsigned long)kdfCheck);
+			return CKR_MECHANISM_PARAM_INVALID;
+		}
+		if (kdfCheck == CKD_NULL &&
+		    ((CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->ulSharedDataLen != 0) ||
+		     (CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->pSharedData != NULL_PTR)))
+		{
+			DEBUG_MSG("Shared data not allowed when kdf is CKD_NULL");
+			return CKR_MECHANISM_PARAM_INVALID;
+		}
 	}
 	if ((CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->ulPublicDataLen == 0) ||
 	    (CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->pPublicData == NULL_PTR))
@@ -4093,6 +4554,68 @@ CK_RV SoftHSM::deriveEDDSA
 			ByteString value;
 			ByteString plainKCV;
 			ByteString kcv;
+
+			// Apply ANSI X9.63 KDF if requested (PKCS#11 v3.2 §2.3.5)
+			{
+				CK_ULONG kdf = CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->kdf;
+				if (kdf != CKD_NULL)
+				{
+					const char* digestName = ckdToDigestName(kdf);
+					if (digestName == nullptr)
+					{
+						DEBUG_MSG("ckdToDigestName: unknown KDF");
+						bOK = false;
+					}
+					else
+					{
+						CK_BYTE_PTR  pSharedData   = CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->pSharedData;
+						CK_ULONG ulSharedDataLen   = CK_ECDH1_DERIVE_PARAMS_PTR(pMechanism->pParameter)->ulSharedDataLen;
+						size_t kdfOutLen           = (byteLen > 0) ? byteLen : secretValue.size();
+						EVP_KDF* kdfAlgo = EVP_KDF_fetch(NULL, "X963KDF", NULL);
+						if (kdfAlgo == NULL)
+						{
+							DEBUG_MSG("EVP_KDF_fetch X963KDF failed: 0x%08X", ERR_get_error());
+							bOK = false;
+						}
+						else
+						{
+							EVP_KDF_CTX* kctx = EVP_KDF_CTX_new(kdfAlgo);
+							EVP_KDF_free(kdfAlgo);
+							if (kctx == NULL)
+							{
+								DEBUG_MSG("EVP_KDF_CTX_new failed");
+								bOK = false;
+							}
+							else
+							{
+								OSSL_PARAM kdfParams[4];
+								int pi = 0;
+								kdfParams[pi++] = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST,
+								                      const_cast<char*>(digestName), 0);
+								kdfParams[pi++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SECRET,
+								                      secretValue.byte_str(), secretValue.size());
+								if (pSharedData != NULL_PTR && ulSharedDataLen > 0)
+									kdfParams[pi++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO,
+									                      pSharedData, (size_t)ulSharedDataLen);
+								kdfParams[pi] = OSSL_PARAM_construct_end();
+								ByteString kdfOut;
+								kdfOut.resize(kdfOutLen);
+								if (EVP_KDF_derive(kctx, kdfOut.byte_str(), kdfOutLen, kdfParams) <= 0)
+								{
+									DEBUG_MSG("EVP_KDF_derive X963KDF failed: 0x%08X", ERR_get_error());
+									bOK = false;
+								}
+								else
+								{
+									secretValue = kdfOut;
+									checkValue  = false; // KCV not meaningful for KDF-derived keys
+								}
+								EVP_KDF_CTX_free(kctx);
+							}
+						}
+					}
+				}
+			}
 
 			// For generic and AES keys:
 			// default to return max size available.

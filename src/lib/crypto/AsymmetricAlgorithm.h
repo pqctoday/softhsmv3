@@ -96,6 +96,10 @@ struct AsymMech
 		ECDSA_SHA256,
 		ECDSA_SHA384,
 		ECDSA_SHA512,
+		ECDSA_SHA3_224,     // CKM_ECDSA_SHA3_224 (PKCS#11 v3.2 §6.3)
+		ECDSA_SHA3_256,     // CKM_ECDSA_SHA3_256
+		ECDSA_SHA3_384,     // CKM_ECDSA_SHA3_384
+		ECDSA_SHA3_512,     // CKM_ECDSA_SHA3_512
 		EDDSA,
 		MLDSA,              // CKM_ML_DSA pure-message sign/verify (FIPS 204)
 		HASH_MLDSA,         // CKM_HASH_ML_DSA (generic, hash in param)
