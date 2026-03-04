@@ -1,0 +1,702 @@
+# SoftHSMv3 Developer Guide
+
+## Contents
+
+1. [What softhsmv3 is](#1-what-softhsmv3-is)
+2. [Key types and mechanisms](#2-key-types-and-mechanisms)
+3. [Known limitations](#3-known-limitations)
+4. [Building](#4-building)
+5. [Writing a C++ client](#5-writing-a-c-client)
+   - [5.1 Loading the library](#51-loading-the-library)
+   - [5.2 Initialize and open a token](#52-initialize-and-open-a-token)
+   - [5.3 ML-DSA sign / verify walkthrough](#53-ml-dsa-sign--verify-walkthrough)
+   - [5.4 ML-KEM encapsulate / decapsulate walkthrough](#54-ml-kem-encapsulate--decapsulate-walkthrough)
+   - [5.5 Multi-message sign session (C_SignMessageBegin / C_SignMessageNext)](#55-multi-message-sign-session)
+   - [5.6 Authenticated key wrap / unwrap (AES-GCM)](#56-authenticated-key-wrap--unwrap-aes-gcm)
+   - [5.7 Pre-bound signature verification](#57-pre-bound-signature-verification)
+6. [Error handling conventions](#6-error-handling-conventions)
+
+---
+
+## 1. What softhsmv3 is
+
+SoftHSMv3 is a fork of [SoftHSM2 v2.7.0](https://github.com/softhsm/SoftHSMv2) with three
+major extensions:
+
+| Dimension | SoftHSM2 | softhsmv3 |
+| --- | --- | --- |
+| Crypto backend | OpenSSL 1.x / Botan | OpenSSL ≥ 3.6 only (EVP API exclusively — no ENGINE, no legacy provider) |
+| PKCS#11 version | 3.0 | **3.2 (CSD01, April 2025)** |
+| PQC algorithms | None | ML-KEM-512/768/1024, ML-DSA-44/65/87, SLH-DSA-SHA2/SHAKE × 4 variants × 3 security levels |
+| Build targets | Shared library | Shared library **+ Emscripten WASM** (`@pqctoday/softhsm-wasm` npm package) |
+
+**Architecture notes:**
+
+- **Single compilation unit per feature area** — `SoftHSM_sign.cpp`, `SoftHSM_cipher.cpp`,
+  `SoftHSM_keygen.cpp`, `SoftHSM_kem.cpp`, `SoftHSM_slots.cpp` each handle one concern.
+  `SoftHSM.cpp` holds shared helpers (e.g. `acquireSessionTokenKey`).
+- **In-memory token only** — the object store lives in RAM. Token state does not survive a
+  process exit or WASM module reload.
+- **Single-threaded WASM target** — the Emscripten build has no SharedArrayBuffer worker pool.
+  The native build is thread-safe.
+- **No ENGINE, no deprecated API** — every crypto operation goes through `EVP_PKEY_*` or
+  `EVP_CIPHER_*`. This is a hard requirement for OpenSSL 3.x FIPS provider compatibility.
+
+---
+
+## 2. Key types and mechanisms
+
+### 2.1 PQC key types (`CKK_*`)
+
+| Constant | Value | Algorithm family |
+| --- | --- | --- |
+| `CKK_ML_KEM` | `0x49` | ML-KEM (FIPS 203) |
+| `CKK_ML_DSA` | `0x4a` | ML-DSA (FIPS 204) |
+| `CKK_SLH_DSA` | `0x4b` | SLH-DSA (FIPS 205) |
+
+### 2.2 PQC parameter sets (`CKA_PARAMETER_SET` / `CKP_*`)
+
+#### ML-KEM
+
+| Constant | Value | Variant |
+| --- | --- | --- |
+| `CKP_ML_KEM_512` | `0x01` | ML-KEM-512 |
+| `CKP_ML_KEM_768` | `0x02` | ML-KEM-768 |
+| `CKP_ML_KEM_1024` | `0x03` | ML-KEM-1024 |
+
+#### ML-DSA
+
+| Constant | Value | Variant |
+| --- | --- | --- |
+| `CKP_ML_DSA_44` | `0x01` | ML-DSA-44 |
+| `CKP_ML_DSA_65` | `0x02` | ML-DSA-65 |
+| `CKP_ML_DSA_87` | `0x03` | ML-DSA-87 |
+
+#### SLH-DSA
+
+| Constant | Value | Variant |
+| --- | --- | --- |
+| `CKP_SLH_DSA_SHA2_128S` | `0x01` | SLH-DSA-SHA2-128s |
+| `CKP_SLH_DSA_SHAKE_128S` | `0x02` | SLH-DSA-SHAKE-128s |
+| `CKP_SLH_DSA_SHA2_128F` | `0x03` | SLH-DSA-SHA2-128f |
+| `CKP_SLH_DSA_SHAKE_128F` | `0x04` | SLH-DSA-SHAKE-128f |
+| `CKP_SLH_DSA_SHA2_192S` | `0x05` | SLH-DSA-SHA2-192s |
+| `CKP_SLH_DSA_SHAKE_192S` | `0x06` | SLH-DSA-SHAKE-192s |
+| `CKP_SLH_DSA_SHA2_192F` | `0x07` | SLH-DSA-SHA2-192f |
+| `CKP_SLH_DSA_SHAKE_192F` | `0x08` | SLH-DSA-SHAKE-192f |
+| `CKP_SLH_DSA_SHA2_256S` | `0x09` | SLH-DSA-SHA2-256s |
+| `CKP_SLH_DSA_SHAKE_256S` | `0x0a` | SLH-DSA-SHAKE-256s |
+| `CKP_SLH_DSA_SHA2_256F` | `0x0b` | SLH-DSA-SHA2-256f |
+| `CKP_SLH_DSA_SHAKE_256F` | `0x0c` | SLH-DSA-SHAKE-256f |
+
+### 2.3 Mechanisms (`CKM_*`)
+
+| Mechanism | Value | Operation |
+| --- | --- | --- |
+| `CKM_ML_KEM_KEY_PAIR_GEN` | `0x0f` | Generate ML-KEM key pair |
+| `CKM_ML_KEM` | `0x17` | `C_EncapsulateKey` / `C_DecapsulateKey` |
+| `CKM_ML_DSA_KEY_PAIR_GEN` | `0x1c` | Generate ML-DSA key pair |
+| `CKM_ML_DSA` | `0x1d` | Pure ML-DSA sign / verify |
+| `CKM_HASH_ML_DSA` | `0x1f` | Pre-hash ML-DSA (algorithm from context param) |
+| `CKM_HASH_ML_DSA_SHA{224,256,384,512}` | `0x23–0x26` | Pre-hash ML-DSA with fixed hash |
+| `CKM_HASH_ML_DSA_SHA3_{224,256,384,512}` | `0x27–0x2a` | Pre-hash ML-DSA with SHA-3 |
+| `CKM_HASH_ML_DSA_SHAKE{128,256}` | `0x2b–0x2c` | Pre-hash ML-DSA with SHAKE |
+| `CKM_SLH_DSA_KEY_PAIR_GEN` | `0x2d` | Generate SLH-DSA key pair |
+| `CKM_SLH_DSA` | `0x2e` | Pure SLH-DSA sign / verify |
+| `CKM_HASH_SLH_DSA` | `0x34` | Pre-hash SLH-DSA (algorithm from context param) |
+| `CKM_HASH_SLH_DSA_SHA{224,256,384,512}` | `0x36–0x39` | Pre-hash SLH-DSA with fixed hash |
+| `CKM_HASH_SLH_DSA_SHA3_{224,256,384,512}` | `0x3a–0x3d` | Pre-hash SLH-DSA with SHA-3 |
+| `CKM_HASH_SLH_DSA_SHAKE{128,256}` | `0x3e–0x3f` | Pre-hash SLH-DSA with SHAKE |
+
+### 2.4 Classic algorithms (retained from SoftHSM2)
+
+RSA (1024–4096 bit), ECDSA (P-256/P-384/P-521/Ed25519/Ed448), ECDH (X25519/X448),
+AES-CBC/GCM (128/192/256 bit), HMAC-{SHA1,SHA256,SHA384,SHA512},
+SHA-{1,224,256,384,512} digest.
+
+**Removed from SoftHSM2**: GOST, 3DES/DES, DSA, DH, Camellia.
+
+---
+
+## 3. Known limitations
+
+- **Stateful hash-based signatures (HSS, XMSS) are not implemented.** These algorithms require
+  persistent, monotonically increasing counters external to the HSM; the in-memory token cannot
+  provide the required durability guarantees.
+
+- **Single-threaded WASM build.** The Emscripten target does not use a SharedArrayBuffer worker
+  pool. Crypto-intensive operations (especially SLH-DSA-SHA2-256s key generation and signing)
+  may block the main thread for several seconds on constrained hardware.
+
+- **Non-persistent token.** All token state (objects, PIN, label) lives in RAM. Reloading the
+  WASM module or restarting the native process loses all objects. Callers that need persistence
+  must serialize objects with `C_GetAttributeValue(CKA_VALUE)` and re-import on next load.
+
+- **`C_CopyObject`, `C_CreateObject` for PQC keys are partially supported.** Importing raw PQC
+  key material via `C_CreateObject` works for AES and RSA; PQC import is not yet implemented.
+
+---
+
+## 4. Building
+
+### 4.1 Prerequisites
+
+| Tool | Minimum | Notes |
+| --- | --- | --- |
+| CMake | 3.16 | |
+| OpenSSL | 3.6.0 | Required for ML-DSA and SLH-DSA EVP support |
+| C++ compiler | C++17 | g++ 11+ or clang++ 14+ |
+| Emscripten (WASM) | 3.1.50+ | WASM target only |
+
+**macOS:**
+```bash
+brew install openssl@3 cmake
+export OPENSSL_ROOT_DIR=$(brew --prefix openssl@3)
+```
+
+**Linux (Debian/Ubuntu):**
+```bash
+# OpenSSL 3.6 must be built from source if your distro ships an older version.
+sudo apt-get install build-essential cmake
+```
+
+### 4.2 Native build
+
+```bash
+# From the softhsmv3 repository root:
+cmake -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DWITH_CRYPTO_BACKEND=openssl \
+    -DENABLE_MLKEM=ON \
+    -DENABLE_MLDSA=ON \
+    -DOPENSSL_ROOT_DIR="$OPENSSL_ROOT_DIR"   # macOS only
+
+cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+```
+
+The shared library is produced at `build/src/lib/libsofthsm2.so` (Linux) or
+`build/src/lib/libsofthsm2.dylib` (macOS).
+
+### 4.3 Running the test suite
+
+```bash
+cmake --build build --target p11test
+./build/src/lib/test/p11test
+```
+
+See `docs/howtotestsofthsmv3.md` for the full testing workflow including the
+`pqc_validate` validation suite.
+
+### 4.4 WASM build
+
+```bash
+# Requires Emscripten SDK and OpenSSL 3.6 cross-compiled for wasm32
+source /path/to/emsdk/emsdk_env.sh
+
+cmake -B build-wasm \
+    -DCMAKE_TOOLCHAIN_FILE="$EMSDK/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake" \
+    -DWITH_CRYPTO_BACKEND=openssl \
+    -DENABLE_MLKEM=ON \
+    -DENABLE_MLDSA=ON
+
+emmake cmake --build build-wasm -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu)
+```
+
+---
+
+## 5. Writing a C++ client
+
+### 5.1 Loading the library
+
+softhsmv3 is a standard PKCS#11 shared library. Load it with `dlopen` and resolve the
+`C_GetFunctionList` entry point to obtain a `CK_FUNCTION_LIST_PTR`.
+
+```cpp
+/* Required platform macros before including cryptoki.h */
+#define CK_PTR *
+#define CK_DECLARE_FUNCTION(ret, name)         ret name
+#define CK_DECLARE_FUNCTION_POINTER(ret, name) ret (* name)
+#define CK_CALLBACK_FUNCTION(ret, name)        ret (* name)
+#ifndef NULL_PTR
+#  define NULL_PTR 0
+#endif
+
+#include "cryptoki.h"   /* PKCS#11 v3.2 headers — src/lib/pkcs11/ */
+#include <dlfcn.h>
+#include <cassert>
+#include <cstdio>
+
+int main() {
+    /* Load the shared library */
+    void* lib = dlopen("./libsofthsm2.so", RTLD_LAZY);
+    assert(lib && "dlopen failed");
+
+    /* Resolve C_GetFunctionList */
+    typedef CK_RV (*GetFunctionList_t)(CK_FUNCTION_LIST_PTR_PTR);
+    auto gfl = reinterpret_cast<GetFunctionList_t>(dlsym(lib, "C_GetFunctionList"));
+    assert(gfl && "C_GetFunctionList not found");
+
+    CK_FUNCTION_LIST_PTR p11;
+    CK_RV rv = gfl(&p11);
+    assert(rv == CKR_OK);
+
+    /* From here, use p11->C_Initialize, p11->C_OpenSession, etc. */
+
+    p11->C_Finalize(NULL_PTR);
+    dlclose(lib);
+    return 0;
+}
+```
+
+> **v3.2 functions** (`C_EncapsulateKey`, `C_DecapsulateKey`, `C_WrapKeyAuthenticated`,
+> `C_UnwrapKeyAuthenticated`, `C_VerifySignatureInit`, `C_VerifySignature*`,
+> `C_SignMessageBegin`, `C_SignMessageNext`, `C_VerifyMessageBegin`, `C_VerifyMessageNext`)
+> are not in the v3.0 `CK_FUNCTION_LIST` struct. Resolve them individually with `dlsym`:
+>
+> ```cpp
+> typedef CK_RV (*FnEncapsulate)(CK_SESSION_HANDLE, CK_MECHANISM_PTR,
+>     CK_OBJECT_HANDLE, CK_ATTRIBUTE_PTR, CK_ULONG,
+>     CK_BYTE_PTR, CK_ULONG_PTR, CK_OBJECT_HANDLE_PTR);
+> auto C_EncapsulateKey = reinterpret_cast<FnEncapsulate>(dlsym(lib, "C_EncapsulateKey"));
+> ```
+
+### 5.2 Initialize and open a token
+
+```cpp
+/* Initialize the library */
+p11->C_Initialize(NULL_PTR);
+
+/* Find an uninitialized slot */
+CK_ULONG slotCount = 0;
+p11->C_GetSlotList(CK_FALSE, NULL_PTR, &slotCount);
+std::vector<CK_SLOT_ID> slots(slotCount);
+p11->C_GetSlotList(CK_FALSE, slots.data(), &slotCount);
+
+CK_SLOT_ID slot = slots[0];
+
+/* Initialize token (space-padded 32-byte label, SO PIN) */
+CK_UTF8CHAR label[32];
+memset(label, ' ', sizeof(label));
+memcpy(label, "MyToken", 7);
+CK_UTF8CHAR soPin[] = "12345678";
+p11->C_InitToken(slot, soPin, 8, label);
+
+/* Re-enumerate: InitToken may change the slot ID */
+p11->C_GetSlotList(CK_TRUE, NULL_PTR, &slotCount);
+slots.resize(slotCount);
+p11->C_GetSlotList(CK_TRUE, slots.data(), &slotCount);
+slot = slots[0];
+
+/* Open a read-write session */
+CK_SESSION_HANDLE hSession;
+p11->C_OpenSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION,
+    NULL_PTR, NULL_PTR, &hSession);
+
+/* Set User PIN (while logged in as SO) */
+p11->C_Login(hSession, CKU_SO, soPin, 8);
+CK_UTF8CHAR userPin[] = "userpin1";
+p11->C_InitPIN(hSession, userPin, 8);
+p11->C_Logout(hSession);
+
+/* Log in as the normal user */
+p11->C_Login(hSession, CKU_USER, userPin, 8);
+```
+
+### 5.3 ML-DSA sign / verify walkthrough
+
+```cpp
+/* ── 1. Generate an ML-DSA-65 key pair ─────────────────────────────────── */
+CK_BBOOL ckTrue  = CK_TRUE;
+CK_BBOOL ckFalse = CK_FALSE;
+CK_ULONG paramSet = CKP_ML_DSA_65;   /* 0x02 */
+
+CK_ATTRIBUTE pubTemplate[] = {
+    { CKA_TOKEN,         &ckFalse,  sizeof(ckFalse) },
+    { CKA_VERIFY,        &ckTrue,   sizeof(ckTrue)  },
+    { CKA_PARAMETER_SET, &paramSet, sizeof(paramSet) },
+};
+CK_ATTRIBUTE privTemplate[] = {
+    { CKA_TOKEN,         &ckFalse,  sizeof(ckFalse) },
+    { CKA_SENSITIVE,     &ckTrue,   sizeof(ckTrue)  },
+    { CKA_SIGN,          &ckTrue,   sizeof(ckTrue)  },
+    { CKA_PARAMETER_SET, &paramSet, sizeof(paramSet) },
+};
+
+CK_OBJECT_HANDLE hPub, hPriv;
+CK_MECHANISM genMech = { CKM_ML_DSA_KEY_PAIR_GEN, NULL_PTR, 0 };
+rv = p11->C_GenerateKeyPair(hSession, &genMech,
+    pubTemplate,  sizeof(pubTemplate)  / sizeof(pubTemplate[0]),
+    privTemplate, sizeof(privTemplate) / sizeof(privTemplate[0]),
+    &hPub, &hPriv);
+assert(rv == CKR_OK);
+
+/* ── 2. Sign a message ──────────────────────────────────────────────────── */
+/* For pure ML-DSA (CKM_ML_DSA) the pParameter is a CK_ML_DSA_PARAMS struct.
+ * A zero-filled struct selects the default (no context, no pre-hash, hedged). */
+CK_ML_DSA_PARAMS signParams = {};   /* context="" len=0, hedging=CK_ML_DSA_HEDGE_PREFERRED */
+CK_MECHANISM signMech = { CKM_ML_DSA, &signParams, sizeof(signParams) };
+
+rv = p11->C_SignInit(hSession, &signMech, hPriv);
+assert(rv == CKR_OK);
+
+CK_BYTE message[] = "Hello PQC World";
+CK_ULONG msgLen   = sizeof(message) - 1;
+
+/* Size query */
+CK_ULONG sigLen = 0;
+rv = p11->C_Sign(hSession, message, msgLen, NULL_PTR, &sigLen);
+assert(rv == CKR_OK);
+
+std::vector<CK_BYTE> signature(sigLen);
+rv = p11->C_Sign(hSession, message, msgLen, signature.data(), &sigLen);
+assert(rv == CKR_OK);
+signature.resize(sigLen);
+
+/* ── 3. Verify the signature ────────────────────────────────────────────── */
+CK_MECHANISM verifyMech = { CKM_ML_DSA, &signParams, sizeof(signParams) };
+rv = p11->C_VerifyInit(hSession, &verifyMech, hPub);
+assert(rv == CKR_OK);
+
+rv = p11->C_Verify(hSession, message, msgLen, signature.data(), sigLen);
+assert(rv == CKR_OK);   /* CKR_SIGNATURE_INVALID on mismatch */
+```
+
+### 5.4 ML-KEM encapsulate / decapsulate walkthrough
+
+```cpp
+/* ── 1. Generate an ML-KEM-768 key pair ─────────────────────────────────── */
+CK_ULONG kemParam = CKP_ML_KEM_768;   /* 0x02 */
+
+CK_ATTRIBUTE kemPubTpl[] = {
+    { CKA_TOKEN,         &ckFalse,  sizeof(ckFalse)  },
+    { CKA_ENCAPSULATE,   &ckTrue,   sizeof(ckTrue)   },
+    { CKA_PARAMETER_SET, &kemParam, sizeof(kemParam) },
+};
+CK_ATTRIBUTE kemPrivTpl[] = {
+    { CKA_TOKEN,         &ckFalse,  sizeof(ckFalse)  },
+    { CKA_SENSITIVE,     &ckTrue,   sizeof(ckTrue)   },
+    { CKA_DECAPSULATE,   &ckTrue,   sizeof(ckTrue)   },
+    { CKA_PARAMETER_SET, &kemParam, sizeof(kemParam) },
+};
+
+CK_OBJECT_HANDLE hKEMPub, hKEMPriv;
+CK_MECHANISM kemGenMech = { CKM_ML_KEM_KEY_PAIR_GEN, NULL_PTR, 0 };
+rv = p11->C_GenerateKeyPair(hSession, &kemGenMech,
+    kemPubTpl,  sizeof(kemPubTpl)  / sizeof(kemPubTpl[0]),
+    kemPrivTpl, sizeof(kemPrivTpl) / sizeof(kemPrivTpl[0]),
+    &hKEMPub, &hKEMPriv);
+assert(rv == CKR_OK);
+
+/* ── 2. Load v3.2 function pointers ─────────────────────────────────────── */
+typedef CK_RV (*FnEncap)(CK_SESSION_HANDLE, CK_MECHANISM_PTR,
+    CK_OBJECT_HANDLE, CK_ATTRIBUTE_PTR, CK_ULONG,
+    CK_BYTE_PTR, CK_ULONG_PTR, CK_OBJECT_HANDLE_PTR);
+typedef CK_RV (*FnDecap)(CK_SESSION_HANDLE, CK_MECHANISM_PTR,
+    CK_OBJECT_HANDLE, CK_ATTRIBUTE_PTR, CK_ULONG,
+    CK_BYTE_PTR, CK_ULONG, CK_OBJECT_HANDLE_PTR);
+
+auto C_EncapsulateKey = reinterpret_cast<FnEncap>(dlsym(lib, "C_EncapsulateKey"));
+auto C_DecapsulateKey = reinterpret_cast<FnDecap>(dlsym(lib, "C_DecapsulateKey"));
+
+/* ── 3. Encapsulate (sender side) ────────────────────────────────────────── */
+/* The derived shared secret will be a CKK_GENERIC_SECRET key object. */
+CK_OBJECT_CLASS secretClass = CKO_SECRET_KEY;
+CK_KEY_TYPE secretKeyType   = CKK_GENERIC_SECRET;
+CK_ULONG secretValueLen     = 32;   /* ML-KEM always produces 32-byte shared secrets */
+
+CK_ATTRIBUTE sharedSecretTpl[] = {
+    { CKA_CLASS,     &secretClass,   sizeof(secretClass)   },
+    { CKA_KEY_TYPE,  &secretKeyType, sizeof(secretKeyType) },
+    { CKA_VALUE_LEN, &secretValueLen, sizeof(secretValueLen) },
+    { CKA_ENCRYPT,   &ckTrue,        sizeof(ckTrue)        },
+};
+
+CK_MECHANISM kemMech = { CKM_ML_KEM, NULL_PTR, 0 };
+
+/* Size query for ciphertext */
+CK_ULONG ctLen = 0;
+CK_OBJECT_HANDLE hSenderSharedKey;
+rv = C_EncapsulateKey(hSession, &kemMech, hKEMPub,
+    sharedSecretTpl, sizeof(sharedSecretTpl) / sizeof(sharedSecretTpl[0]),
+    NULL_PTR, &ctLen, &hSenderSharedKey);
+assert(rv == CKR_OK);
+
+std::vector<CK_BYTE> ciphertext(ctLen);
+rv = C_EncapsulateKey(hSession, &kemMech, hKEMPub,
+    sharedSecretTpl, sizeof(sharedSecretTpl) / sizeof(sharedSecretTpl[0]),
+    ciphertext.data(), &ctLen, &hSenderSharedKey);
+assert(rv == CKR_OK);
+
+/* ── 4. Decapsulate (recipient side) ─────────────────────────────────────── */
+CK_ATTRIBUTE recipientSecretTpl[] = {
+    { CKA_CLASS,     &secretClass,    sizeof(secretClass)   },
+    { CKA_KEY_TYPE,  &secretKeyType,  sizeof(secretKeyType) },
+    { CKA_VALUE_LEN, &secretValueLen, sizeof(secretValueLen) },
+    { CKA_DECRYPT,   &ckTrue,         sizeof(ckTrue)        },
+};
+
+CK_OBJECT_HANDLE hRecipientSharedKey;
+rv = C_DecapsulateKey(hSession, &kemMech, hKEMPriv,
+    recipientSecretTpl, sizeof(recipientSecretTpl) / sizeof(recipientSecretTpl[0]),
+    ciphertext.data(), ctLen, &hRecipientSharedKey);
+assert(rv == CKR_OK);
+
+/* Both hSenderSharedKey and hRecipientSharedKey now hold the same 32-byte secret.
+ * Retrieve and compare with C_GetAttributeValue(CKA_VALUE) to verify. */
+```
+
+### 5.5 Multi-message sign session
+
+The PKCS#11 v3.2 message API allows a single sign session to sign many messages
+without re-loading the key. There are two patterns: one-shot (`C_SignMessage`) and
+two-step commit-then-sign (`C_SignMessageBegin` / `C_SignMessageNext`).
+
+```cpp
+typedef CK_RV (*FnMsgSignInit)(CK_SESSION_HANDLE, CK_MECHANISM_PTR, CK_OBJECT_HANDLE);
+typedef CK_RV (*FnSignMsg)(CK_SESSION_HANDLE, CK_VOID_PTR, CK_ULONG,
+    CK_BYTE_PTR, CK_ULONG, CK_BYTE_PTR, CK_ULONG_PTR);
+typedef CK_RV (*FnSignBegin)(CK_SESSION_HANDLE, CK_VOID_PTR, CK_ULONG);
+typedef CK_RV (*FnSignNext)(CK_SESSION_HANDLE, CK_VOID_PTR, CK_ULONG,
+    CK_BYTE_PTR, CK_ULONG, CK_BYTE_PTR, CK_ULONG_PTR);
+typedef CK_RV (*FnMsgSignFinal)(CK_SESSION_HANDLE);
+
+auto C_MessageSignInit  = reinterpret_cast<FnMsgSignInit >(dlsym(lib, "C_MessageSignInit"));
+auto C_SignMessage       = reinterpret_cast<FnSignMsg     >(dlsym(lib, "C_SignMessage"));
+auto C_SignMessageBegin  = reinterpret_cast<FnSignBegin   >(dlsym(lib, "C_SignMessageBegin"));
+auto C_SignMessageNext   = reinterpret_cast<FnSignNext    >(dlsym(lib, "C_SignMessageNext"));
+auto C_MessageSignFinal  = reinterpret_cast<FnMsgSignFinal>(dlsym(lib, "C_MessageSignFinal"));
+
+/* Open a message-sign session on hPriv (ML-DSA-65) */
+CK_ML_DSA_PARAMS msParams = {};
+CK_MECHANISM msMech = { CKM_ML_DSA, &msParams, sizeof(msParams) };
+rv = C_MessageSignInit(hSession, &msMech, hPriv);
+assert(rv == CKR_OK);
+
+/* ── Pattern A: one-shot per message (C_SignMessage) ─────────────────────── */
+for (const auto& [msgBuf, msgLen] : messages) {
+    /* size query */
+    CK_ULONG sigLen = 0;
+    rv = C_SignMessage(hSession, NULL_PTR, 0,
+        (CK_BYTE_PTR)msgBuf, msgLen, NULL_PTR, &sigLen);
+    assert(rv == CKR_OK);
+
+    std::vector<CK_BYTE> sig(sigLen);
+    rv = C_SignMessage(hSession, NULL_PTR, 0,
+        (CK_BYTE_PTR)msgBuf, msgLen, sig.data(), &sigLen);
+    assert(rv == CKR_OK);
+    /* process sig … */
+}
+
+/* ── Pattern B: two-step (Begin then Next) ───────────────────────────────── */
+for (const auto& [msgBuf, msgLen] : messages) {
+    /* Commit per-message parameters (e.g. a context string override). */
+    /* Passing NULL here keeps the init-time parameters unchanged.     */
+    rv = C_SignMessageBegin(hSession, NULL_PTR, 0);
+    assert(rv == CKR_OK);
+
+    /* size query — session stays in MESSAGE_SIGN_BEGIN */
+    CK_ULONG sigLen = 0;
+    rv = C_SignMessageNext(hSession, NULL_PTR, 0,
+        (CK_BYTE_PTR)msgBuf, msgLen, NULL_PTR, &sigLen);
+    assert(rv == CKR_OK);
+
+    std::vector<CK_BYTE> sig(sigLen);
+    rv = C_SignMessageNext(hSession, NULL_PTR, 0,
+        (CK_BYTE_PTR)msgBuf, msgLen, sig.data(), &sigLen);
+    assert(rv == CKR_OK);
+    /* process sig … */
+    /* Session is now back in MESSAGE_SIGN — ready for the next Begin/Next. */
+}
+
+/* Close the message-sign session */
+rv = C_MessageSignFinal(hSession);
+assert(rv == CKR_OK);
+```
+
+### 5.6 Authenticated key wrap / unwrap (AES-GCM)
+
+`C_WrapKeyAuthenticated` and `C_UnwrapKeyAuthenticated` provide AES-GCM key wrapping.
+This is the recommended path for wrapping PQC private keys, which are too large for
+RSA-OAEP key transport.
+
+```cpp
+typedef CK_RV (*FnWrapAuth)(CK_SESSION_HANDLE, CK_MECHANISM_PTR,
+    CK_OBJECT_HANDLE, CK_OBJECT_HANDLE,
+    CK_BYTE_PTR, CK_ULONG, CK_BYTE_PTR, CK_ULONG_PTR);
+typedef CK_RV (*FnUnwrapAuth)(CK_SESSION_HANDLE, CK_MECHANISM_PTR,
+    CK_OBJECT_HANDLE, CK_BYTE_PTR, CK_ULONG,
+    CK_ATTRIBUTE_PTR, CK_ULONG,
+    CK_BYTE_PTR, CK_ULONG, CK_OBJECT_HANDLE_PTR);
+
+auto C_WrapKeyAuthenticated   = reinterpret_cast<FnWrapAuth  >(dlsym(lib, "C_WrapKeyAuthenticated"));
+auto C_UnwrapKeyAuthenticated = reinterpret_cast<FnUnwrapAuth>(dlsym(lib, "C_UnwrapKeyAuthenticated"));
+
+/* Generate a 256-bit AES wrapping key */
+CK_ULONG aesLen = 32;
+CK_ATTRIBUTE aesTpl[] = {
+    { CKA_TOKEN,     &ckFalse, sizeof(ckFalse) },
+    { CKA_VALUE_LEN, &aesLen,  sizeof(aesLen)  },
+    { CKA_WRAP,      &ckTrue,  sizeof(ckTrue)  },
+    { CKA_UNWRAP,    &ckTrue,  sizeof(ckTrue)  },
+};
+CK_MECHANISM aesGenMech = { CKM_AES_KEY_GEN, NULL_PTR, 0 };
+CK_OBJECT_HANDLE hWrapKey;
+rv = p11->C_GenerateKey(hSession, &aesGenMech, aesTpl,
+    sizeof(aesTpl) / sizeof(aesTpl[0]), &hWrapKey);
+assert(rv == CKR_OK);
+
+/* AES-GCM params: 12-byte IV, 128-bit tag, no AAD */
+CK_BYTE iv[12];
+p11->C_GenerateRandom(hSession, iv, sizeof(iv));
+CK_GCM_PARAMS gcmParams = { iv, sizeof(iv), 128 /* tagBits */ };
+CK_MECHANISM gcmMech = { CKM_AES_GCM, &gcmParams, sizeof(gcmParams) };
+
+/* Wrap hPriv (ML-DSA private key) — no associated data */
+CK_ULONG wrappedLen = 0;
+rv = C_WrapKeyAuthenticated(hSession, &gcmMech, hWrapKey, hPriv,
+    NULL_PTR, 0,           /* pAssociatedData, ulAssociatedDataLen */
+    NULL_PTR, &wrappedLen);
+assert(rv == CKR_OK);
+
+std::vector<CK_BYTE> wrappedKey(wrappedLen);
+rv = C_WrapKeyAuthenticated(hSession, &gcmMech, hWrapKey, hPriv,
+    NULL_PTR, 0,
+    wrappedKey.data(), &wrappedLen);
+assert(rv == CKR_OK);
+
+/* Unwrap into a new private key object */
+CK_ULONG keyType  = CKK_ML_DSA;
+CK_ULONG objClass = CKO_PRIVATE_KEY;
+CK_ULONG ps65     = CKP_ML_DSA_65;
+CK_ATTRIBUTE unwrapTpl[] = {
+    { CKA_CLASS,         &objClass, sizeof(objClass) },
+    { CKA_KEY_TYPE,      &keyType,  sizeof(keyType)  },
+    { CKA_SENSITIVE,     &ckTrue,   sizeof(ckTrue)   },
+    { CKA_SIGN,          &ckTrue,   sizeof(ckTrue)   },
+    { CKA_PARAMETER_SET, &ps65,     sizeof(ps65)     },
+};
+CK_OBJECT_HANDLE hRestoredPriv;
+rv = C_UnwrapKeyAuthenticated(hSession, &gcmMech, hWrapKey,
+    wrappedKey.data(), wrappedLen,
+    unwrapTpl, sizeof(unwrapTpl) / sizeof(unwrapTpl[0]),
+    NULL_PTR, 0,    /* pAssociatedData, ulAssociatedDataLen */
+    &hRestoredPriv);
+assert(rv == CKR_OK);
+```
+
+### 5.7 Pre-bound signature verification
+
+`C_VerifySignatureInit` binds a signature and key to the session before the message
+data is available — the "signature-first" pattern used in streaming protocols.
+
+```cpp
+typedef CK_RV (*FnVSInit)(CK_SESSION_HANDLE, CK_MECHANISM_PTR,
+    CK_OBJECT_HANDLE, CK_BYTE_PTR, CK_ULONG);
+typedef CK_RV (*FnVS)(CK_SESSION_HANDLE, CK_BYTE_PTR, CK_ULONG);
+typedef CK_RV (*FnVSUpdate)(CK_SESSION_HANDLE, CK_BYTE_PTR, CK_ULONG);
+typedef CK_RV (*FnVSFinal)(CK_SESSION_HANDLE);
+
+auto C_VerifySignatureInit   = reinterpret_cast<FnVSInit  >(dlsym(lib, "C_VerifySignatureInit"));
+auto C_VerifySignature       = reinterpret_cast<FnVS      >(dlsym(lib, "C_VerifySignature"));
+auto C_VerifySignatureUpdate = reinterpret_cast<FnVSUpdate>(dlsym(lib, "C_VerifySignatureUpdate"));
+auto C_VerifySignatureFinal  = reinterpret_cast<FnVSFinal >(dlsym(lib, "C_VerifySignatureFinal"));
+
+CK_MECHANISM vsMech = { CKM_ML_DSA, &signParams, sizeof(signParams) };
+
+/* One-shot: bind signature, then provide message */
+rv = C_VerifySignatureInit(hSession, &vsMech, hPub,
+    signature.data(), sigLen);
+assert(rv == CKR_OK);
+
+rv = C_VerifySignature(hSession, message, msgLen);
+assert(rv == CKR_OK);   /* CKR_SIGNATURE_INVALID on mismatch */
+
+/* Multi-part: bind signature, stream message in chunks */
+rv = C_VerifySignatureInit(hSession, &vsMech, hPub,
+    signature.data(), sigLen);
+assert(rv == CKR_OK);
+
+for (const auto& chunk : messageChunks)
+    C_VerifySignatureUpdate(hSession, chunk.data(), chunk.size());
+
+rv = C_VerifySignatureFinal(hSession);
+assert(rv == CKR_OK);
+```
+
+---
+
+## 6. Error handling conventions
+
+### 6.1 Return values used by softhsmv3
+
+| `CK_RV` constant | When returned |
+| --- | --- |
+| `CKR_OK` (`0x00`) | Success |
+| `CKR_CRYPTOKI_NOT_INITIALIZED` | Any call before `C_Initialize` |
+| `CKR_SESSION_HANDLE_INVALID` | Unknown or closed session handle |
+| `CKR_OPERATION_NOT_INITIALIZED` | Operation function called without `*Init` |
+| `CKR_OPERATION_ACTIVE` | `*Init` called while another operation is active on the session |
+| `CKR_KEY_FUNCTION_NOT_PERMITTED` | Key missing required usage attribute (e.g., `CKA_SIGN=FALSE`) |
+| `CKR_KEY_TYPE_INCONSISTENT` | Key type does not match mechanism (e.g., RSA key with `CKM_ML_DSA`) |
+| `CKR_MECHANISM_INVALID` | Mechanism not supported or not registered for this key type |
+| `CKR_MECHANISM_PARAM_INVALID` | Mechanism parameter struct is malformed or contains invalid values |
+| `CKR_BUFFER_TOO_SMALL` | Output buffer provided but too short; retry with the returned length |
+| `CKR_ARGUMENTS_BAD` | Required pointer argument is `NULL_PTR` |
+| `CKR_SIGNATURE_INVALID` | Signature verification failed (tampered data or wrong key) |
+| `CKR_SIGNATURE_LEN_RANGE` | Signature buffer is the wrong size for the mechanism |
+| `CKR_TEMPLATE_INCOMPLETE` | Required attribute missing from key generation template |
+| `CKR_TEMPLATE_INCONSISTENT` | Attribute combination is not permitted |
+| `CKR_USER_NOT_LOGGED_IN` | Token-resident key operations require `C_Login` |
+| `CKR_ENCRYPTED_DATA_INVALID` | AES-GCM authentication tag failed (wrong key or tampered ciphertext) |
+| `CKR_GENERAL_ERROR` | Unexpected internal error (OpenSSL EVP layer failure) |
+
+### 6.2 Size-query pattern
+
+Any function that writes variable-length output (`pOutput`, `pSignature`, `pWrappedKey`,
+`pCiphertext`) follows the standard PKCS#11 two-call pattern:
+
+```cpp
+/* Call 1: pass NULL output pointer → get required length */
+CK_ULONG outLen = 0;
+rv = p11->C_Sign(hSession, data, dataLen, NULL_PTR, &outLen);
+assert(rv == CKR_OK);
+
+/* Call 2: allocate and pass buffer of returned length */
+std::vector<CK_BYTE> out(outLen);
+rv = p11->C_Sign(hSession, data, dataLen, out.data(), &outLen);
+assert(rv == CKR_OK);
+out.resize(outLen);  /* actual bytes written (may be ≤ allocated) */
+```
+
+If the buffer you allocate is too small, `CKR_BUFFER_TOO_SMALL` is returned and
+`*pulLen` is updated to the required size. The session operation remains active so
+you can retry with a correctly-sized buffer.
+
+### 6.3 Session operation state after errors
+
+| Scenario | Session op-type after error |
+| --- | --- |
+| `*Init` fails | Unchanged (still `SESSION_OP_NONE`) |
+| `C_Sign` / `C_Verify` fails (other than `CKR_BUFFER_TOO_SMALL`) | `SESSION_OP_NONE` — must reinitialize |
+| `C_Sign` / `C_Verify` returns `CKR_BUFFER_TOO_SMALL` | Unchanged — operation still active, may retry |
+| `C_SignMessageNext` returns `CKR_BUFFER_TOO_SMALL` | `SESSION_OP_MESSAGE_SIGN_BEGIN` — may retry with correct size |
+| `C_SignMessageNext` returns any other error | `SESSION_OP_NONE` — multi-message session terminated |
+| `C_VerifySignatureFinal` returns `CKR_SIGNATURE_INVALID` | `SESSION_OP_NONE` — no re-use possible |
+
+### 6.4 Cleanup on error
+
+Always destroy sensitive key objects when they are no longer needed:
+
+```cpp
+if (hPriv != CK_INVALID_HANDLE)
+    p11->C_DestroyObject(hSession, hPriv);
+```
+
+And always close the session and finalize the library on exit, even after errors:
+
+```cpp
+p11->C_Logout(hSession);
+p11->C_CloseSession(hSession);
+p11->C_Finalize(NULL_PTR);
+dlclose(lib);
+```

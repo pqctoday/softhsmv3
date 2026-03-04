@@ -526,6 +526,105 @@ cmake -B build -DDEFAULT_LOG_LEVEL=DEBUG ...
 
 ---
 
+## 10. Key Template Requirements
+
+### Attribute check flags (P11Attribute.h)
+
+| Flag | Value | Meaning |
+| --- | --- | --- |
+| `ck1` | 1 | MUST NOT be specified on `C_CreateObject` |
+| `ck2` | 2 | MUST NOT be specified on `C_CopyObject` / key generation |
+| `ck3` | 4 | MUST be specified when created via `C_GenerateKey` / `C_GenerateKeyPair` |
+| `ck4` | 8 | Set internally after creation; caller must not supply |
+| `ck6` | 32 | MUST NOT be specified on `C_UnwrapKey` |
+
+`CreateObject` with `OBJECT_OP_GENERATE` enforces **ck3**: if the attribute is not in the
+caller's template, it returns `CKR_TEMPLATE_INCOMPLETE`.
+
+Source: `src/lib/P11Objects.cpp` lines 261–282, `src/lib/P11Attributes.h` lines 76–80.
+
+---
+
+### C_EncapsulateKey / C_DecapsulateKey — output secret key template
+
+Source: `src/lib/SoftHSM_kem.cpp` lines 221–268 (encapsulate) / 395–443 (decapsulate).
+
+**Default values applied before caller template is merged (bImplicit = true):**
+
+| Attribute | Default | Notes |
+| --- | --- | --- |
+| `CKA_CLASS` | `CKO_SECRET_KEY` | Hardcoded in secretAttribs; must equal `CKO_SECRET_KEY` if supplied |
+| `CKA_TOKEN` | `CK_FALSE` | Session object (not persisted to disk) |
+| `CKA_PRIVATE` | `CK_TRUE` | Value is encrypted-at-rest in the token |
+| `CKA_KEY_TYPE` | `CKK_GENERIC_SECRET` | Hardcoded; caller override stripped |
+
+**Attributes the implementation strips from the caller template (never forwarded to CreateObject):**
+`CKA_CLASS`, `CKA_TOKEN`, `CKA_PRIVATE`, `CKA_KEY_TYPE`, `CKA_VALUE`
+
+**Mandatory caller attribute — `CKA_VALUE_LEN` (0x00000161):**
+
+`P11AttrValueLen` is registered with `ck2|ck3` for `P11GenericSecretKeyObj`
+(`P11Objects.cpp` line 1472). Because `CreateObject` is called with `OBJECT_OP_GENERATE`,
+the `ck3` check fires and returns `CKR_TEMPLATE_INCOMPLETE` if `CKA_VALUE_LEN` is absent.
+
+For ML-KEM, the shared secret is **always 32 bytes** for all parameter sets
+(ML-KEM-512, -768, -1024) per FIPS 203 §7. Always supply:
+
+```c
+CK_ULONG valueLen = 32;
+CK_ATTRIBUTE tpl[] = {
+    { CKA_CLASS,     &secretClass, sizeof(secretClass) },
+    { CKA_VALUE_LEN, &valueLen,    sizeof(valueLen)    },
+    { CKA_SENSITIVE,   &bFalse,   sizeof(bFalse)       },  // optional
+    { CKA_EXTRACTABLE, &bTrue,    sizeof(bTrue)         },  // optional
+};
+C_EncapsulateKey(hSession, &mech, hPubKey, tpl, 4, pCiphertext, &ctLen, &hSecret);
+```
+
+Omitting `CKA_VALUE_LEN` → `CKR_TEMPLATE_INCOMPLETE (0x000000d0)`.
+
+**Attributes written internally (do NOT include in template):**
+
+| Attribute | Flag | Written by |
+| --- | --- | --- |
+| `CKA_VALUE` | ck4 | Injected post-`CreateObject` with actual shared secret bytes |
+| `CKA_LOCAL` | ck4 | Set to `false` (key imported from external operation) |
+| `CKA_ALWAYS_SENSITIVE` | ck4 | Set to `false` |
+| `CKA_NEVER_EXTRACTABLE` | ck4 | Set to `false` |
+
+---
+
+### C_GenerateKeyPair — ML-KEM / ML-DSA public and private key templates
+
+Source: `src/lib/SoftHSM_kem.cpp` lines 50–100, `src/lib/SoftHSM_sign.cpp`.
+
+Both `CKA_PARAMETER_SET` (0x0000061d) and the class/key-type must be in the template.
+For the public key: `CKA_ENCAPSULATE = CK_TRUE` (0x00000633) is required by ML-KEM;
+for the private key: `CKA_DECAPSULATE = CK_TRUE` (0x00000634).
+
+Minimal working templates:
+
+```c
+// Public key
+CK_ATTRIBUTE pubTpl[] = {
+    { CKA_CLASS,         &pubClass,    sizeof(pubClass)    },
+    { CKA_KEY_TYPE,      &kkMlKem,     sizeof(kkMlKem)     },
+    { CKA_PARAMETER_SET, &paramSet512, sizeof(paramSet512) }, // CKP_ML_KEM_512/768/1024
+    { CKA_ENCAPSULATE,   &bTrue,       sizeof(bTrue)       },
+};
+// Private key
+CK_ATTRIBUTE privTpl[] = {
+    { CKA_CLASS,         &privClass,   sizeof(privClass)   },
+    { CKA_KEY_TYPE,      &kkMlKem,     sizeof(kkMlKem)     },
+    { CKA_PARAMETER_SET, &paramSet512, sizeof(paramSet512) },
+    { CKA_DECAPSULATE,   &bTrue,       sizeof(bTrue)       },
+    { CKA_SENSITIVE,     &bTrue,       sizeof(bTrue)       },
+    { CKA_EXTRACTABLE,   &bFalse,      sizeof(bFalse)      },
+};
+```
+
+---
+
 ## Related Files
 
 | File | Description |
