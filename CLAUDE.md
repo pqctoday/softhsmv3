@@ -76,11 +76,14 @@ CKK_ML_DSA              = 0x0000004a
 CKM_ML_KEM              = 0x00000017
 CKM_ML_DSA_KEY_PAIR_GEN = 0x0000001c
 CKM_ML_DSA              = 0x0000001d
-CKA_PARAMETER_SET       = 0x00000601  // CKP_ML_DSA_44/65/87, CKP_ML_KEM_512/768/1024
-CKA_ENCAPSULATE         = 0x00000623
-CKA_DECAPSULATE         = 0x00000624
-CKA_SEED                = 0x00000602  // 32-byte deterministic seed for ML-DSA keygen
+CKA_PARAMETER_SET       = 0x0000061d  // CKP_ML_DSA_44/65/87, CKP_ML_KEM_512/768/1024
+CKA_ENCAPSULATE         = 0x00000633
+CKA_DECAPSULATE         = 0x00000634
+CKA_SEED                = 0x00000637  // deterministic seed: ξ for ML-DSA, d||z for ML-KEM
 ```
+
+Values verified from `src/lib/pkcs11/pkcs11t.h` and PKCS#11 v3.2 CSD01 spec
+(`docs/refs/pkcs11-spec-v3.2-csd01.pdf`).
 
 New functions in pkcs11f.h:
 - `C_EncapsulateKey` — ML-KEM encapsulation

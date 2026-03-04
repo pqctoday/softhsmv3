@@ -528,7 +528,17 @@ cmake -B build -DDEFAULT_LOG_LEVEL=DEBUG ...
 
 ## 10. Key Template Requirements
 
-### Attribute check flags (P11Attribute.h)
+> **Spec reference**: PKCS#11 v3.2 CSD01 (16 April 2025) — `docs/refs/pkcs11-spec-v3.2-csd01.pdf`
+> §6.67 ML-DSA (p. 447) — Tables 280, 281; §6.67.4 key pair generation |
+> §6.68 ML-KEM (p. 453) — Tables 287, 288; §6.68.4 key pair generation; §6.68.5 Key Agreement |
+> §6.69 SLH-DSA (p. 456) — Tables 290, 291; §6.69.4 key pair generation
+
+---
+
+### SoftHSMv3 attribute check flags (P11Attribute.h)
+
+These flags govern which attributes are mandatory, forbidden, or auto-set for each
+PKCS#11 creation operation. They are a SoftHSMv3 implementation detail (not in the spec).
 
 | Flag | Value | Meaning |
 | --- | --- | --- |
@@ -545,27 +555,150 @@ Source: `src/lib/P11Objects.cpp` lines 261–282, `src/lib/P11Attributes.h` line
 
 ---
 
+### ML-KEM key object attributes (spec §6.68, Tables 287–288)
+
+**Public key** (`CKO_PUBLIC_KEY`, `CKK_ML_KEM`):
+
+| Attribute | Type | Required on C_CreateObject | Contributed by C_GenerateKeyPair |
+| --- | --- | --- | --- |
+| `CKA_PARAMETER_SET` | `CK_ML_KEM_PARAMETER_SET_TYPE` | Yes | Caller supplies in pub template |
+| `CKA_VALUE` | Byte array (ek) | Yes | Mechanism writes |
+
+**Private key** (`CKO_PRIVATE_KEY`, `CKK_ML_KEM`):
+
+| Attribute | Type | Required on C_CreateObject | Notes |
+| --- | --- | --- | --- |
+| `CKA_PARAMETER_SET` | `CK_ML_KEM_PARAMETER_SET_TYPE` | Yes | NOT in keygen private template (see below) |
+| `CKA_SEED` | Byte array (d\|\|z) | At least one of SEED/VALUE | Mechanism writes |
+| `CKA_VALUE` | Byte array (dk) | At least one of SEED/VALUE | Mechanism writes |
+
+Parameter sets: `CKP_ML_KEM_512`, `CKP_ML_KEM_768`, `CKP_ML_KEM_1024`
+
+---
+
+### ML-DSA key object attributes (spec §6.67, Tables 280–281)
+
+**Public key** (`CKO_PUBLIC_KEY`, `CKK_ML_DSA`):
+
+| Attribute | Type | Required on C_CreateObject | Contributed by C_GenerateKeyPair |
+| --- | --- | --- | --- |
+| `CKA_PARAMETER_SET` | `CK_ML_DSA_PARAMETER_SET_TYPE` | Yes | Caller supplies in pub template |
+| `CKA_VALUE` | Byte array (vk) | Yes | Mechanism writes |
+
+**Private key** (`CKO_PRIVATE_KEY`, `CKK_ML_DSA`):
+
+| Attribute | Type | Required on C_CreateObject | Notes |
+| --- | --- | --- | --- |
+| `CKA_PARAMETER_SET` | `CK_ML_DSA_PARAMETER_SET_TYPE` | Yes | NOT in keygen private template (see below) |
+| `CKA_SEED` | Byte array (ξ) | At least one of SEED/VALUE | Mechanism writes |
+| `CKA_VALUE` | Byte array (sk) | At least one of SEED/VALUE | Mechanism writes |
+
+Parameter sets: `CKP_ML_DSA_44`, `CKP_ML_DSA_65`, `CKP_ML_DSA_87`
+
+---
+
+### SLH-DSA key object attributes (spec §6.69, Tables 290–291)
+
+**Public key** (`CKO_PUBLIC_KEY`, `CKK_SLH_DSA`):
+
+| Attribute | Type | Required on C_CreateObject | Contributed by C_GenerateKeyPair |
+| --- | --- | --- | --- |
+| `CKA_PARAMETER_SET` | `CK_SLH_DSA_PARAMETER_SET_TYPE` | Yes | Caller supplies in pub template |
+| `CKA_VALUE` | Byte array | Yes | Mechanism writes |
+
+**Private key** (`CKO_PRIVATE_KEY`, `CKK_SLH_DSA`):
+
+| Attribute | Type | Required on C_CreateObject | Notes |
+| --- | --- | --- | --- |
+| `CKA_PARAMETER_SET` | `CK_SLH_DSA_PARAMETER_SET_TYPE` | Yes | NOT in keygen private template (see below) |
+| `CKA_VALUE` | Byte array | Yes | Mechanism writes; no CKA_SEED for SLH-DSA |
+
+Parameter sets: `CKP_SLH_DSA_SHA2_128S/F`, `CKP_SLH_DSA_SHAKE_128S/F`, `CKP_SLH_DSA_SHA2_192S/F`, `CKP_SLH_DSA_SHAKE_192S/F`, `CKP_SLH_DSA_SHA2_256S/F`, `CKP_SLH_DSA_SHAKE_256S`
+
+---
+
+### C_GenerateKeyPair — ML-KEM key templates
+
+Source: spec §6.68.4; `src/lib/SoftHSM_kem.cpp` lines 50–100.
+
+> **Spec rule**: `CKA_PARAMETER_SET` is specified in the **public key** template only.
+> It MUST NOT be in the private key template for `C_GenerateKeyPair` (spec §6.68.4:
+> *"ML-KEM private keys are only generated as part of a key pair, and the parameter
+> set is specified in the template for the ML-KEM public key"*).
+
+```c
+// Public key — CKA_PARAMETER_SET MUST be here (specifies which variant to generate)
+CK_ATTRIBUTE pubTpl[] = {
+    { CKA_CLASS,         &pubClass,    sizeof(pubClass)    },
+    { CKA_KEY_TYPE,      &kkMlKem,     sizeof(kkMlKem)     },
+    { CKA_PARAMETER_SET, &paramSet512, sizeof(paramSet512) }, // CKP_ML_KEM_512/768/1024
+    { CKA_ENCAPSULATE,   &bTrue,       sizeof(bTrue)       },
+};
+// Private key — NO CKA_PARAMETER_SET (inherited from public key template per spec)
+CK_ATTRIBUTE privTpl[] = {
+    { CKA_CLASS,       &privClass, sizeof(privClass) },
+    { CKA_KEY_TYPE,    &kkMlKem,   sizeof(kkMlKem)   },
+    { CKA_SENSITIVE,   &bTrue,     sizeof(bTrue)     },
+    { CKA_DECAPSULATE, &bTrue,     sizeof(bTrue)     },
+};
+```
+
+The mechanism contributes `CKA_CLASS`, `CKA_KEY_TYPE`, `CKA_VALUE` to the public key;
+`CKA_CLASS`, `CKA_KEY_TYPE`, `CKA_PARAMETER_SET`, `CKA_SEED`, `CKA_VALUE` to the private key.
+
+### C_GenerateKeyPair — ML-DSA key templates
+
+Source: spec §6.67.4; `src/lib/SoftHSM_sign.cpp`.
+
+Same rule: `CKA_PARAMETER_SET` in public key template only.
+
+```c
+// Public key
+CK_ATTRIBUTE pubTpl[] = {
+    { CKA_CLASS,         &pubClass,   sizeof(pubClass)   },
+    { CKA_KEY_TYPE,      &kkMlDsa,    sizeof(kkMlDsa)    },
+    { CKA_PARAMETER_SET, &paramSet44, sizeof(paramSet44) }, // CKP_ML_DSA_44/65/87
+    { CKA_VERIFY,        &bTrue,      sizeof(bTrue)      },
+};
+// Private key — NO CKA_PARAMETER_SET
+CK_ATTRIBUTE privTpl[] = {
+    { CKA_CLASS,     &privClass, sizeof(privClass) },
+    { CKA_KEY_TYPE,  &kkMlDsa,   sizeof(kkMlDsa)   },
+    { CKA_SENSITIVE, &bTrue,     sizeof(bTrue)     },
+    { CKA_SIGN,      &bTrue,     sizeof(bTrue)     },
+};
+```
+
+---
+
 ### C_EncapsulateKey / C_DecapsulateKey — output secret key template
 
-Source: `src/lib/SoftHSM_kem.cpp` lines 221–268 (encapsulate) / 395–443 (decapsulate).
+Source: spec §6.68.5; `src/lib/SoftHSM_kem.cpp` lines 221–268 (encapsulate) / 395–443 (decapsulate).
 
-**Default values applied before caller template is merged (bImplicit = true):**
+The spec (§6.68.5) states: *"The mechanism contributes the result as the CKA_VALUE attribute
+of the new key; other attributes required by the key type must be specified in the template."*
+
+**Default values applied before caller template is merged (SoftHSMv3 bImplicit = true):**
 
 | Attribute | Default | Notes |
 | --- | --- | --- |
-| `CKA_CLASS` | `CKO_SECRET_KEY` | Hardcoded in secretAttribs; must equal `CKO_SECRET_KEY` if supplied |
+| `CKA_CLASS` | `CKO_SECRET_KEY` | Hardcoded; must equal `CKO_SECRET_KEY` if supplied |
 | `CKA_TOKEN` | `CK_FALSE` | Session object (not persisted to disk) |
 | `CKA_PRIVATE` | `CK_TRUE` | Value is encrypted-at-rest in the token |
 | `CKA_KEY_TYPE` | `CKK_GENERIC_SECRET` | Hardcoded; caller override stripped |
 
-**Attributes the implementation strips from the caller template (never forwarded to CreateObject):**
+**Attributes stripped from the caller template (SoftHSMv3 implementation detail):**
 `CKA_CLASS`, `CKA_TOKEN`, `CKA_PRIVATE`, `CKA_KEY_TYPE`, `CKA_VALUE`
 
-**Mandatory caller attribute — `CKA_VALUE_LEN` (0x00000161):**
+**SoftHSMv3 mandatory attribute — `CKA_VALUE_LEN` (0x00000161):**
 
 `P11AttrValueLen` is registered with `ck2|ck3` for `P11GenericSecretKeyObj`
 (`P11Objects.cpp` line 1472). Because `CreateObject` is called with `OBJECT_OP_GENERATE`,
 the `ck3` check fires and returns `CKR_TEMPLATE_INCOMPLETE` if `CKA_VALUE_LEN` is absent.
+
+> **Note**: The PKCS#11 v3.2 spec example (§5.18.8) uses `CKK_AES` and does not include
+> `CKA_VALUE_LEN`. The requirement is a SoftHSMv3 implementation constraint enforced by
+> the `ck3` flag for `CKK_GENERIC_SECRET`, not a universal spec mandate for all implementations.
 
 For ML-KEM, the shared secret is **always 32 bytes** for all parameter sets
 (ML-KEM-512, -768, -1024) per FIPS 203 §7. Always supply:
@@ -573,17 +706,17 @@ For ML-KEM, the shared secret is **always 32 bytes** for all parameter sets
 ```c
 CK_ULONG valueLen = 32;
 CK_ATTRIBUTE tpl[] = {
-    { CKA_CLASS,     &secretClass, sizeof(secretClass) },
-    { CKA_VALUE_LEN, &valueLen,    sizeof(valueLen)    },
-    { CKA_SENSITIVE,   &bFalse,   sizeof(bFalse)       },  // optional
-    { CKA_EXTRACTABLE, &bTrue,    sizeof(bTrue)         },  // optional
+    { CKA_CLASS,       &secretClass, sizeof(secretClass) },
+    { CKA_VALUE_LEN,   &valueLen,    sizeof(valueLen)    },  // MANDATORY in SoftHSMv3
+    { CKA_SENSITIVE,   &bFalse,      sizeof(bFalse)      },  // optional
+    { CKA_EXTRACTABLE, &bTrue,       sizeof(bTrue)        },  // optional
 };
 C_EncapsulateKey(hSession, &mech, hPubKey, tpl, 4, pCiphertext, &ctLen, &hSecret);
 ```
 
 Omitting `CKA_VALUE_LEN` → `CKR_TEMPLATE_INCOMPLETE (0x000000d0)`.
 
-**Attributes written internally (do NOT include in template):**
+**Attributes written internally by SoftHSMv3 (do NOT include in template):**
 
 | Attribute | Flag | Written by |
 | --- | --- | --- |
@@ -591,37 +724,6 @@ Omitting `CKA_VALUE_LEN` → `CKR_TEMPLATE_INCOMPLETE (0x000000d0)`.
 | `CKA_LOCAL` | ck4 | Set to `false` (key imported from external operation) |
 | `CKA_ALWAYS_SENSITIVE` | ck4 | Set to `false` |
 | `CKA_NEVER_EXTRACTABLE` | ck4 | Set to `false` |
-
----
-
-### C_GenerateKeyPair — ML-KEM / ML-DSA public and private key templates
-
-Source: `src/lib/SoftHSM_kem.cpp` lines 50–100, `src/lib/SoftHSM_sign.cpp`.
-
-Both `CKA_PARAMETER_SET` (0x0000061d) and the class/key-type must be in the template.
-For the public key: `CKA_ENCAPSULATE = CK_TRUE` (0x00000633) is required by ML-KEM;
-for the private key: `CKA_DECAPSULATE = CK_TRUE` (0x00000634).
-
-Minimal working templates:
-
-```c
-// Public key
-CK_ATTRIBUTE pubTpl[] = {
-    { CKA_CLASS,         &pubClass,    sizeof(pubClass)    },
-    { CKA_KEY_TYPE,      &kkMlKem,     sizeof(kkMlKem)     },
-    { CKA_PARAMETER_SET, &paramSet512, sizeof(paramSet512) }, // CKP_ML_KEM_512/768/1024
-    { CKA_ENCAPSULATE,   &bTrue,       sizeof(bTrue)       },
-};
-// Private key
-CK_ATTRIBUTE privTpl[] = {
-    { CKA_CLASS,         &privClass,   sizeof(privClass)   },
-    { CKA_KEY_TYPE,      &kkMlKem,     sizeof(kkMlKem)     },
-    { CKA_PARAMETER_SET, &paramSet512, sizeof(paramSet512) },
-    { CKA_DECAPSULATE,   &bTrue,       sizeof(bTrue)       },
-    { CKA_SENSITIVE,     &bTrue,       sizeof(bTrue)       },
-    { CKA_EXTRACTABLE,   &bFalse,      sizeof(bFalse)      },
-};
-```
 
 ---
 
