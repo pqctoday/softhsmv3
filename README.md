@@ -236,7 +236,7 @@ C_UnwrapKeyAuthenticated()
   - [x] `C_VerifySignatureInit` / `C_VerifySignature` — pre-bound verification ([#19](https://github.com/pqctoday/softhsmv3/issues/19))
   - [x] `C_WrapKeyAuthenticated` / `C_UnwrapKeyAuthenticated` ([#20](https://github.com/pqctoday/softhsmv3/issues/20))
   - [x] `C_LoginUser` / `C_SessionCancel` — v3.0 session management ([#21](https://github.com/pqctoday/softhsmv3/issues/21))
-- [ ] Fix `C_VerifySignatureFinal` / `C_VerifySignatureUpdate` multi-part path for ML-DSA ([#22](https://github.com/pqctoday/softhsmv3/issues/22))
+  - [x] `C_VerifySignatureFinal` / `C_VerifySignatureUpdate` multi-part pre-bound verify ([#22](https://github.com/pqctoday/softhsmv3/issues/22))
 
 ## Building (Native)
 
