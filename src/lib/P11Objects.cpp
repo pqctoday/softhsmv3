@@ -425,7 +425,7 @@ bool P11CertificateObj::init(OSObject *inobject)
 	P11Attribute* attrCheckValue = new P11AttrCheckValue(osobject, 0);
 	P11Attribute* attrStartDate = new P11AttrStartDate(osobject,0);
 	P11Attribute* attrEndDate = new P11AttrEndDate(osobject,0);
-	// TODO: CKA_PUBLIC_KEY_INFO is accepted, but we do not calculate it.
+	// CKA_PUBLIC_KEY_INFO: default empty; computed from X.509 cert DER in C_CreateObject (TODO)
 	P11Attribute* attrPublicKeyInfo = new P11AttrPublicKeyInfo(osobject,0);
 
 	// Initialize the attributes
@@ -702,7 +702,7 @@ bool P11PublicKeyObj::init(OSObject *inobject)
 	P11Attribute* attrWrap = new P11AttrWrap(osobject);
 	P11Attribute* attrTrusted = new P11AttrTrusted(osobject);
 	P11Attribute* attrWrapTemplate = new P11AttrWrapTemplate(osobject);
-	// TODO: CKA_PUBLIC_KEY_INFO is accepted, but we do not calculate it
+	// CKA_PUBLIC_KEY_INFO: default empty; populated with SPKI DER by keygen (G-PUB1 complete)
 	P11Attribute* attrPublicKeyInfo = new P11AttrPublicKeyInfo(osobject,0);
 
 	// Initialize the attributes
@@ -1023,7 +1023,7 @@ bool P11PrivateKeyObj::init(OSObject *inobject)
 	P11Attribute* attrUnwrapTemplate = new P11AttrUnwrapTemplate(osobject);
 	// TODO: CKA_ALWAYS_AUTHENTICATE is accepted, but we do not use it
 	P11Attribute* attrAlwaysAuthenticate = new P11AttrAlwaysAuthenticate(osobject);
-	// TODO: CKA_PUBLIC_KEY_INFO is accepted, but we do not calculate it
+	// CKA_PUBLIC_KEY_INFO: default empty; populated with SPKI DER by keygen (G-PUB1 complete)
 	P11Attribute* attrPublicKeyInfo = new P11AttrPublicKeyInfo(osobject,P11Attribute::ck8);
 
 	// Initialize the attributes

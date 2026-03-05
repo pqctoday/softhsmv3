@@ -74,8 +74,12 @@
 #include "OSSLMLKEMPublicKey.h"
 #include "OSSLMLKEMPrivateKey.h"
 #include "OSSLMLKEM.h"
+#include "OSSLRSAPublicKey.h"
+#include "OSSLECPublicKey.h"
+#include "OSSLEDPublicKey.h"
 #include <openssl/err.h>
 #include <openssl/evp.h>
+#include <openssl/x509.h>
 #include <openssl/kdf.h>
 #include <openssl/core_names.h>
 #include <openssl/params.h>
@@ -112,6 +116,19 @@ static const char* ckmToDigestName(CK_MECHANISM_TYPE mech)
 		case CKM_SHA3_512: return "SHA3-512";
 		default:           return nullptr;
 	}
+}
+
+// Encode a public EVP_PKEY as SubjectPublicKeyInfo DER (for CKA_PUBLIC_KEY_INFO per PKCS#11 v3.2 §4.14)
+static ByteString spkiFromPkey(EVP_PKEY* pkey)
+{
+	ByteString spki;
+	if (pkey == nullptr) return spki;
+	int len = i2d_PUBKEY(pkey, nullptr);
+	if (len <= 0) return spki;
+	spki.resize(len);
+	unsigned char* p = &spki[0];
+	i2d_PUBKEY(pkey, &p);
+	return spki;
 }
 
 // Generate a secret key or a domain parameter set using the specified mechanism
@@ -2191,6 +2208,230 @@ CK_RV SoftHSM::C_DeriveKey
 	}
 #endif
 
+	// SP 800-108 Counter KDF (PKCS#11 v3.2 §2.44.1, CKM_SP800_108_COUNTER_KDF = 0x000003ac)
+	if (pMechanism->mechanism == CKM_SP800_108_COUNTER_KDF)
+	{
+		if (pMechanism->pParameter == NULL_PTR ||
+		    pMechanism->ulParameterLen != sizeof(CK_SP800_108_KDF_PARAMS))
+		{
+			ERROR_MSG("CKM_SP800_108_COUNTER_KDF requires CK_SP800_108_KDF_PARAMS");
+			return CKR_ARGUMENTS_BAD;
+		}
+		CK_SP800_108_KDF_PARAMS* kp = (CK_SP800_108_KDF_PARAMS*)pMechanism->pParameter;
+
+		// Map prfType to OpenSSL MAC name + digest/cipher name
+		bool kbkUseCmac = (kp->prfType == CKM_AES_CMAC);
+		const char* kbkMacName = kbkUseCmac ? "CMAC" : "HMAC";
+		const char* kbkDigestName = nullptr;
+		if (!kbkUseCmac)
+		{
+			kbkDigestName = ckmToDigestName(kp->prfType);
+			if (kbkDigestName == nullptr)
+			{
+				ERROR_MSG("CKM_SP800_108_COUNTER_KDF: unsupported PRF 0x%08lx", (unsigned long)kp->prfType);
+				return CKR_MECHANISM_PARAM_INVALID;
+			}
+		}
+
+		// Determine output key length from template CKA_VALUE_LEN
+		CK_ULONG kbkKeyLen = 0;
+		for (CK_ULONG i = 0; i < ulCount; i++)
+		{
+			if (pTemplate[i].type == CKA_VALUE_LEN &&
+			    pTemplate[i].pValue != NULL_PTR &&
+			    pTemplate[i].ulValueLen == sizeof(CK_ULONG))
+			{
+				kbkKeyLen = *(CK_ULONG*)pTemplate[i].pValue;
+				break;
+			}
+		}
+		if (kbkKeyLen == 0 || kbkKeyLen > 512)
+		{
+			ERROR_MSG("CKM_SP800_108_COUNTER_KDF: CKA_VALUE_LEN missing or out of range (got %lu)", (unsigned long)kbkKeyLen);
+			return CKR_TEMPLATE_INCOMPLETE;
+		}
+
+		// Retrieve base key (Ki) — decrypt if stored privately
+		ByteString kbkIKM;
+		if (isKeyPrivate)
+		{
+			if (!token->decrypt(key->getByteStringValue(CKA_VALUE), kbkIKM))
+				return CKR_GENERAL_ERROR;
+		}
+		else
+		{
+			kbkIKM = key->getByteStringValue(CKA_VALUE);
+		}
+
+		// For CMAC: select AES cipher variant based on key size
+		const char* kbkCipherName = nullptr;
+		if (kbkUseCmac)
+		{
+			switch (kbkIKM.size())
+			{
+				case 16: kbkCipherName = "AES-128-CBC"; break;
+				case 24: kbkCipherName = "AES-192-CBC"; break;
+				case 32: kbkCipherName = "AES-256-CBC"; break;
+				default:
+					ERROR_MSG("CKM_SP800_108_COUNTER_KDF: unsupported CMAC key size %lu bytes", (unsigned long)kbkIKM.size());
+					return CKR_KEY_SIZE_RANGE;
+			}
+		}
+
+		// Parse CK_PRF_DATA_PARAM array:
+		//   CK_SP800_108_BYTE_ARRAY → append to fixed-input label/context buffer
+		//   CK_SP800_108_ITERATION_VARIABLE → extract counter width (default 32 bits)
+		ByteString kbkFixedInput;
+		int kbkCounterBits = 32;
+		for (CK_ULONG i = 0; i < kp->ulNumberOfDataParams; i++)
+		{
+			CK_PRF_DATA_PARAM* dp = &kp->pDataParams[i];
+			switch (dp->type)
+			{
+				case CK_SP800_108_BYTE_ARRAY:
+					if (dp->pValue != NULL_PTR && dp->ulValueLen > 0)
+						kbkFixedInput += ByteString((CK_BYTE_PTR)dp->pValue, dp->ulValueLen);
+					break;
+				case CK_SP800_108_ITERATION_VARIABLE:
+					if (dp->pValue != NULL_PTR && dp->ulValueLen == sizeof(CK_SP800_108_COUNTER_FORMAT))
+					{
+						CK_SP800_108_COUNTER_FORMAT* cf = (CK_SP800_108_COUNTER_FORMAT*)dp->pValue;
+						if (cf->ulWidthInBits > 0 && cf->ulWidthInBits <= 64)
+							kbkCounterBits = (int)cf->ulWidthInBits;
+					}
+					break;
+				default:
+					break; // DKM_LENGTH, KEY_HANDLE not supported — skip
+			}
+		}
+
+		// Derive via OpenSSL KBKDF counter mode
+		ByteString kbkOut;
+		kbkOut.resize(kbkKeyLen);
+		{
+			static const char kbkModeStr[] = "COUNTER";
+			EVP_KDF* kbkAlgo = EVP_KDF_fetch(NULL, "KBKDF", NULL);
+			if (kbkAlgo == NULL)
+			{
+				ERROR_MSG("EVP_KDF_fetch KBKDF failed: 0x%08X", ERR_get_error());
+				return CKR_FUNCTION_FAILED;
+			}
+			EVP_KDF_CTX* kbkctx = EVP_KDF_CTX_new(kbkAlgo);
+			EVP_KDF_free(kbkAlgo);
+			if (kbkctx == NULL)
+			{
+				ERROR_MSG("EVP_KDF_CTX_new KBKDF failed");
+				return CKR_FUNCTION_FAILED;
+			}
+
+			OSSL_PARAM kbkParams[8];
+			int kpi = 0;
+			kbkParams[kpi++] = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_MODE,
+			                        const_cast<char*>(kbkModeStr), 0);
+			kbkParams[kpi++] = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_MAC,
+			                        const_cast<char*>(kbkMacName), 0);
+			if (!kbkUseCmac)
+				kbkParams[kpi++] = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST,
+				                        const_cast<char*>(kbkDigestName), 0);
+			else
+				kbkParams[kpi++] = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_CIPHER,
+				                        const_cast<char*>(kbkCipherName), 0);
+			kbkParams[kpi++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY,
+			                        kbkIKM.byte_str(), kbkIKM.size());
+			if (kbkFixedInput.size() > 0)
+				kbkParams[kpi++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT,
+				                        kbkFixedInput.byte_str(), kbkFixedInput.size());
+			kbkParams[kpi++] = OSSL_PARAM_construct_int(OSSL_KDF_PARAM_KBKDF_R, &kbkCounterBits);
+			kbkParams[kpi] = OSSL_PARAM_construct_end();
+
+			int kbkRet = EVP_KDF_derive(kbkctx, kbkOut.byte_str(), kbkKeyLen, kbkParams);
+			EVP_KDF_CTX_free(kbkctx);
+			if (kbkRet <= 0)
+			{
+				ERROR_MSG("EVP_KDF_derive KBKDF failed: 0x%08X", ERR_get_error());
+				return CKR_FUNCTION_FAILED;
+			}
+		}
+
+		// Build output key object (mirrors HKDF handler)
+		CK_BBOOL kbkOnToken = CK_FALSE;
+		CK_BBOOL kbkPrivate = CK_TRUE;
+		for (CK_ULONG i = 0; i < ulCount; i++)
+		{
+			if (pTemplate[i].type == CKA_TOKEN && pTemplate[i].pValue != NULL_PTR)
+				kbkOnToken = *(CK_BBOOL*)pTemplate[i].pValue;
+			if (pTemplate[i].type == CKA_PRIVATE && pTemplate[i].pValue != NULL_PTR)
+				kbkPrivate = *(CK_BBOOL*)pTemplate[i].pValue;
+		}
+
+		CK_RV kbkRv = haveWrite(session->getState(), kbkOnToken, kbkPrivate);
+		if (kbkRv != CKR_OK)
+		{
+			if (kbkRv == CKR_USER_NOT_LOGGED_IN) INFO_MSG("User is not authorized");
+			if (kbkRv == CKR_SESSION_READ_ONLY)  INFO_MSG("Session is read-only");
+			return kbkRv;
+		}
+
+		const CK_ULONG kbkMaxAttribs = 32;
+		CK_OBJECT_CLASS kbkObjClass = CKO_SECRET_KEY;
+		CK_KEY_TYPE     kbkKeyType  = CKK_GENERIC_SECRET;
+		CK_ATTRIBUTE kbkAttribs[kbkMaxAttribs] = {
+			{ CKA_CLASS,    &kbkObjClass, sizeof(kbkObjClass) },
+			{ CKA_TOKEN,    &kbkOnToken,  sizeof(kbkOnToken)  },
+			{ CKA_PRIVATE,  &kbkPrivate,  sizeof(kbkPrivate)  },
+			{ CKA_KEY_TYPE, &kbkKeyType,  sizeof(kbkKeyType)  },
+		};
+		CK_ULONG kbkAttribsCount = 4;
+		for (CK_ULONG i = 0; i < ulCount && kbkAttribsCount < kbkMaxAttribs; i++)
+		{
+			switch (pTemplate[i].type)
+			{
+				case CKA_CLASS: case CKA_TOKEN: case CKA_PRIVATE:
+				case CKA_KEY_TYPE: case CKA_CHECK_VALUE: continue;
+				default: kbkAttribs[kbkAttribsCount++] = pTemplate[i]; break;
+			}
+		}
+
+		kbkRv = CreateObject(hSession, kbkAttribs, kbkAttribsCount, phKey, OBJECT_OP_GENERATE);
+		if (kbkRv != CKR_OK) return kbkRv;
+
+		OSObject* kbkObj = (OSObject*)handleManager->getObject(*phKey);
+		if (kbkObj == NULL_PTR || !kbkObj->isValid()) return CKR_FUNCTION_FAILED;
+		if (!kbkObj->startTransaction()) return CKR_FUNCTION_FAILED;
+
+		bool kbkOK = true;
+		kbkOK = kbkOK && kbkObj->setAttribute(CKA_LOCAL, false);
+		CK_ULONG kbkGenMech = (CK_ULONG)CKM_SP800_108_COUNTER_KDF;
+		kbkOK = kbkOK && kbkObj->setAttribute(CKA_KEY_GEN_MECHANISM, kbkGenMech);
+		bool kbkAlwaysSens   = kbkObj->getBooleanValue(CKA_SENSITIVE, false);
+		kbkOK = kbkOK && kbkObj->setAttribute(CKA_ALWAYS_SENSITIVE, kbkAlwaysSens);
+		bool kbkNeverExtract = !kbkObj->getBooleanValue(CKA_EXTRACTABLE, false);
+		kbkOK = kbkOK && kbkObj->setAttribute(CKA_NEVER_EXTRACTABLE, kbkNeverExtract);
+
+		SymmetricKey kbkSymKey;
+		kbkSymKey.setKeyBits(kbkOut);
+		kbkSymKey.setBitLen(kbkKeyLen * 8);
+		ByteString kbkValue;
+		if (kbkPrivate)
+			token->encrypt(kbkSymKey.getKeyBits(), kbkValue);
+		else
+			kbkValue = kbkSymKey.getKeyBits();
+		kbkOK = kbkOK && kbkObj->setAttribute(CKA_VALUE, kbkValue);
+
+		if (kbkOK)
+			kbkObj->commitTransaction();
+		else
+			kbkObj->abortTransaction();
+
+		if (!kbkOK)
+		{
+			handleManager->destroyObject(*phKey);
+			*phKey = CK_INVALID_HANDLE;
+			return CKR_FUNCTION_FAILED;
+		}
+		return CKR_OK;
+	}
+
 	// HKDF derive (PKCS#11 v3.0+ §2.43, CKM_HKDF_DERIVE = 0x0000402a)
 	if (pMechanism->mechanism == CKM_HKDF_DERIVE)
 	{
@@ -2923,6 +3164,13 @@ CK_RV SoftHSM::generateRSA
 				bOK = bOK && osobject->setAttribute(CKA_MODULUS, modulus);
 				bOK = bOK && osobject->setAttribute(CKA_PUBLIC_EXPONENT, publicExponent);
 
+				// PKCS#11 v3.2 §4.14 — CKA_PUBLIC_KEY_INFO: SubjectPublicKeyInfo DER (always public)
+				{
+					ByteString rsa_spki = spkiFromPkey(((OSSLRSAPublicKey*)pub)->getOSSLKey());
+					if (rsa_spki.size() > 0)
+						bOK = bOK && osobject->setAttribute(CKA_PUBLIC_KEY_INFO, rsa_spki);
+				}
+
 				if (bOK)
 					bOK = osobject->commitTransaction();
 				else
@@ -3026,6 +3274,13 @@ CK_RV SoftHSM::generateRSA
 				bOK = bOK && osobject->setAttribute(CKA_EXPONENT_1,exponent1);
 				bOK = bOK && osobject->setAttribute(CKA_EXPONENT_2, exponent2);
 				bOK = bOK && osobject->setAttribute(CKA_COEFFICIENT, coefficient);
+
+				// PKCS#11 v3.2 §4.14 — CKA_PUBLIC_KEY_INFO: SubjectPublicKeyInfo DER (always public)
+				{
+					ByteString rsa_priv_spki = spkiFromPkey(((OSSLRSAPublicKey*)pub)->getOSSLKey());
+					if (rsa_priv_spki.size() > 0)
+						bOK = bOK && osobject->setAttribute(CKA_PUBLIC_KEY_INFO, rsa_priv_spki);
+				}
 
 				if (bOK)
 					bOK = osobject->commitTransaction();
@@ -3172,6 +3427,13 @@ CK_RV SoftHSM::generateEC
 				}
 				bOK = bOK && osobject->setAttribute(CKA_EC_POINT, point);
 
+				// PKCS#11 v3.2 §4.14 — CKA_PUBLIC_KEY_INFO: SubjectPublicKeyInfo DER (always public)
+				{
+					ByteString ec_spki = spkiFromPkey(((OSSLECPublicKey*)pub)->getOSSLKey());
+					if (ec_spki.size() > 0)
+						bOK = bOK && osobject->setAttribute(CKA_PUBLIC_KEY_INFO, ec_spki);
+				}
+
 				if (bOK)
 					bOK = osobject->commitTransaction();
 				else
@@ -3251,6 +3513,12 @@ CK_RV SoftHSM::generateEC
 				}
 				bOK = bOK && osobject->setAttribute(CKA_EC_PARAMS, group);
 				bOK = bOK && osobject->setAttribute(CKA_VALUE, value);
+				// PKCS#11 v3.2 §4.14 — CKA_PUBLIC_KEY_INFO: SubjectPublicKeyInfo DER (always public)
+				{
+					ByteString ec_priv_spki = spkiFromPkey(((OSSLECPublicKey*)pub)->getOSSLKey());
+					if (ec_priv_spki.size() > 0)
+						bOK = bOK && osobject->setAttribute(CKA_PUBLIC_KEY_INFO, ec_priv_spki);
+				}
 
 				if (bOK)
 					bOK = osobject->commitTransaction();
@@ -3409,6 +3677,12 @@ CK_RV SoftHSM::generateED
 					value = pub->getA();
 				}
 				bOK = bOK && osobject->setAttribute(CKA_EC_POINT, value);
+				// PKCS#11 v3.2 §4.14 — CKA_PUBLIC_KEY_INFO: SubjectPublicKeyInfo DER (always public)
+				{
+					ByteString ed_spki = spkiFromPkey(((OSSLEDPublicKey*)pub)->getOSSLKey());
+					if (ed_spki.size() > 0)
+						bOK = bOK && osobject->setAttribute(CKA_PUBLIC_KEY_INFO, ed_spki);
+				}
 
 				if (bOK)
 					bOK = osobject->commitTransaction();
@@ -3488,6 +3762,12 @@ CK_RV SoftHSM::generateED
 				}
 				bOK = bOK && osobject->setAttribute(CKA_EC_PARAMS, group);
 				bOK = bOK && osobject->setAttribute(CKA_VALUE, value);
+				// PKCS#11 v3.2 §4.14 — CKA_PUBLIC_KEY_INFO: SubjectPublicKeyInfo DER (always public)
+				{
+					ByteString ed_priv_spki = spkiFromPkey(((OSSLEDPublicKey*)pub)->getOSSLKey());
+					if (ed_priv_spki.size() > 0)
+						bOK = bOK && osobject->setAttribute(CKA_PUBLIC_KEY_INFO, ed_priv_spki);
+				}
 
 				if (bOK)
 					bOK = osobject->commitTransaction();
@@ -3619,6 +3899,12 @@ CK_RV SoftHSM::generateMLDSA
 				else
 					pubValue = pub->getValue();
 				bOK = bOK && osobject->setAttribute(CKA_VALUE, pubValue);
+				// PKCS#11 v3.2 §4.14 — CKA_PUBLIC_KEY_INFO: SubjectPublicKeyInfo DER (always public)
+				{
+					ByteString mldsa_spki = spkiFromPkey(((OSSLMLDSAPublicKey*)pub)->getOSSLKey());
+					if (mldsa_spki.size() > 0)
+						bOK = bOK && osobject->setAttribute(CKA_PUBLIC_KEY_INFO, mldsa_spki);
+				}
 
 				if (bOK)
 					bOK = osobject->commitTransaction();
@@ -3690,6 +3976,12 @@ CK_RV SoftHSM::generateMLDSA
 				else
 					privValue = priv->getValue();
 				bOK = bOK && osobject->setAttribute(CKA_VALUE, privValue);
+				// PKCS#11 v3.2 §4.14 — CKA_PUBLIC_KEY_INFO: SubjectPublicKeyInfo DER (always public)
+				{
+					ByteString mldsa_priv_spki = spkiFromPkey(((OSSLMLDSAPublicKey*)pub)->getOSSLKey());
+					if (mldsa_priv_spki.size() > 0)
+						bOK = bOK && osobject->setAttribute(CKA_PUBLIC_KEY_INFO, mldsa_priv_spki);
+				}
 
 				if (bOK)
 					bOK = osobject->commitTransaction();
@@ -3821,6 +4113,12 @@ CK_RV SoftHSM::generateSLHDSA
 				else
 					pubValue = pub->getValue();
 				bOK = bOK && osobject->setAttribute(CKA_VALUE, pubValue);
+				// PKCS#11 v3.2 §4.14 — CKA_PUBLIC_KEY_INFO: SubjectPublicKeyInfo DER (always public)
+				{
+					ByteString slhdsa_spki = spkiFromPkey(((OSSLSLHDSAPublicKey*)pub)->getOSSLKey());
+					if (slhdsa_spki.size() > 0)
+						bOK = bOK && osobject->setAttribute(CKA_PUBLIC_KEY_INFO, slhdsa_spki);
+				}
 
 				if (bOK)
 					bOK = osobject->commitTransaction();
@@ -3892,6 +4190,12 @@ CK_RV SoftHSM::generateSLHDSA
 				else
 					privValue = priv->getValue();
 				bOK = bOK && osobject->setAttribute(CKA_VALUE, privValue);
+				// PKCS#11 v3.2 §4.14 — CKA_PUBLIC_KEY_INFO: SubjectPublicKeyInfo DER (always public)
+				{
+					ByteString slhdsa_priv_spki = spkiFromPkey(((OSSLSLHDSAPublicKey*)pub)->getOSSLKey());
+					if (slhdsa_priv_spki.size() > 0)
+						bOK = bOK && osobject->setAttribute(CKA_PUBLIC_KEY_INFO, slhdsa_priv_spki);
+				}
 
 				if (bOK)
 					bOK = osobject->commitTransaction();
@@ -5631,6 +5935,12 @@ CK_RV SoftHSM::generateMLKEM
 				else
 					pubValue = pub->getValue();
 				bOK = bOK && osobject->setAttribute(CKA_VALUE, pubValue);
+				// PKCS#11 v3.2 §4.14 — CKA_PUBLIC_KEY_INFO: SubjectPublicKeyInfo DER (always public)
+				{
+					ByteString mlkem_spki = spkiFromPkey(((OSSLMLKEMPublicKey*)pub)->getOSSLKey());
+					if (mlkem_spki.size() > 0)
+						bOK = bOK && osobject->setAttribute(CKA_PUBLIC_KEY_INFO, mlkem_spki);
+				}
 
 				if (bOK)
 					bOK = osobject->commitTransaction();
@@ -5702,6 +6012,12 @@ CK_RV SoftHSM::generateMLKEM
 				else
 					privValue = priv->getValue();
 				bOK = bOK && osobject->setAttribute(CKA_VALUE, privValue);
+				// PKCS#11 v3.2 §4.14 — CKA_PUBLIC_KEY_INFO: SubjectPublicKeyInfo DER (always public)
+				{
+					ByteString mlkem_priv_spki = spkiFromPkey(((OSSLMLKEMPublicKey*)pub)->getOSSLKey());
+					if (mlkem_priv_spki.size() > 0)
+						bOK = bOK && osobject->setAttribute(CKA_PUBLIC_KEY_INFO, mlkem_priv_spki);
+				}
 
 				if (bOK)
 					bOK = osobject->commitTransaction();

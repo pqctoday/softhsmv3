@@ -1,10 +1,9 @@
-# PKCS#11 v3.2 Compliance Gap Analysis — softhsmv3 (v5)
+# PKCS#11 v3.2 Compliance Gap Analysis — softhsmv3 (v6)
 
-**Updated:** 2026-03-04 (v5 — 5G Security gaps resolved)
-**Baseline:** Post-Phase-7 + G-DA1 + G-DA2 + G-5G1 + G-5G2 + G-5G3 — all tracked gaps resolved
+**Updated:** 2026-03-04 (v6 — CKA_PUBLIC_KEY_INFO + SP 800-108 Counter KDF added)
+**Baseline:** Post-Phase-7 + G-DA1/DA2 + G-5G1/5G2/5G3 + G-PUB1 + G-PK1 — all tracked gaps resolved
 **Spec reference:** OASIS PKCS#11 v3.2 CSD01 (<http://docs.oasis-open.org/pkcs11/pkcs11-base/v3.2/>)
-**Prior baseline (v4):** Post-Phase-7 (2026-03-04) — G1–G6 resolved; G-DA1/G-DA2 identified via
-Digital Assets module crypto audit.
+**Prior baseline (v5):** 5G Security module gaps resolved (2026-03-04).
 
 ---
 
@@ -17,14 +16,18 @@ All v3.2 pre-hash mechanisms for both ML-DSA and SLH-DSA are registered and disp
 All v3.2 additions tracked as G1–G6 are implemented.
 **v4:** `CKM_PKCS5_PBKD2` (G-DA1) and `CKM_ECDSA_SHA3_224/256/384/512` (G-DA2)
 implemented — completing the Digital Assets module crypto requirements.
-**NEW (v5):** `CKM_AES_CTR` (G-5G1), `CKD_SHA256_KDF` on `CKM_ECDH1_DERIVE` (G-5G2),
+**v5:** `CKM_AES_CTR` (G-5G1), `CKD_SHA256_KDF` on `CKM_ECDH1_DERIVE` (G-5G2),
 and `CKM_HKDF_DERIVE` (G-5G3) implemented — completing the 5G Security module PKCS#11 path
 for SUCI deconcealment (3GPP TS 33.501 §6.12.2).
+**NEW (v6):** `CKA_PUBLIC_KEY_INFO` (G-PUB1) computed at keygen for all 6 key types
+(RSA, EC, EdDSA, ML-DSA, SLH-DSA, ML-KEM) via `i2d_PUBKEY()`. `CKM_SP800_108_COUNTER_KDF`
+(G-PK1) implemented using OpenSSL KBKDF — completes NIST SP 800-108 counter mode support.
 
 | Dimension | Remaining open | Notes |
 | --- | --- | --- |
-| C_* function stubs (in scope) | 0 | All G1–G6 + G-DA1/G-DA2 + G-5G1/5G2/5G3 resolved |
-| CKM_* mechanisms (in scope) | 0 | AES-CTR, HKDF, X9.63 KDF support added |
+| C_* function stubs (in scope) | 0 | All G1–G6 + G-DA1/G-DA2 + G-5G1/5G2/5G3 + G-PUB1/G-PK1 resolved |
+| CKM_* mechanisms (in scope) | 0 | AES-CTR, HKDF, X9.63 KDF, SP 800-108 Counter KDF added |
+| CKA_* attribute stubs (in scope) | 0 | CKA_PUBLIC_KEY_INFO now populated at keygen for all key types |
 | Out-of-scope stubs | 3 | Async (G7), Recovery/Combined ops (G8) |
 | Out-of-scope mechanisms | 1 | CKM_RIPEMD160 (WASM `no-module` constraint, G9) |
 
@@ -207,6 +210,69 @@ Used non-deprecated OpenSSL 3.x EVP_KDF API (not `ECDH_KDF_X9_62` which is OSSL_
 - Offsets 0–1: `bExtract`, `bExpand` (CK_BBOOL, 1 byte each)
 - Offsets 2–3: padding (C struct alignment)
 - Offsets 4–31: `prfHashMechanism`, `ulSaltType`, `pSalt`, `ulSaltLen`, `hSaltKey`, `pInfo`, `ulInfoLen` (4 bytes each)
+
+---
+
+## 1.12 Compliance Audit Gaps (v6 additions — G-PUB1, G-PK1)
+
+### 1.12 G-PUB1 — `CKA_PUBLIC_KEY_INFO` — SubjectPublicKeyInfo attribute ✓ RESOLVED
+
+**Need:** PKCS#11 v3.2 §4.14 mandates that all key-pair generation operations populate
+`CKA_PUBLIC_KEY_INFO` (attribute type `0x00000129`) on both the public key object and the
+private key object with the DER-encoded SubjectPublicKeyInfo of the public key.
+Previously the attribute was accepted but always stored as an empty ByteString (3 TODO comments
+in `P11Objects.cpp` at lines 428, 705, 1026).
+
+**OpenSSL implementation:** `i2d_PUBKEY(pkey, &p)` — encodes the `EVP_PKEY*` to DER.
+All OSSL key classes expose `getOSSLKey()` returning `EVP_PKEY*`; a static helper
+`spkiFromPkey(EVP_PKEY*)` calls `i2d_PUBKEY` and returns a `ByteString`.
+
+| Key type | Public key site | Private key site | Cast used |
+| --- | --- | --- | --- |
+| RSA | `SoftHSM_keygen.cpp` after `CKA_PUBLIC_EXPONENT` | After `CKA_COEFFICIENT` | `(OSSLRSAPublicKey*)pub` |
+| EC (ECDSA) | After `CKA_EC_POINT` | After `CKA_VALUE` | `(OSSLECPublicKey*)pub` |
+| EdDSA/X25519 | After `CKA_EC_POINT` (value = A) | After `CKA_VALUE` (K) | `(OSSLEDPublicKey*)pub` |
+| ML-DSA | After `CKA_VALUE` (public) | After `CKA_VALUE` (private) | `(OSSLMLDSAPublicKey*)pub` |
+| SLH-DSA | After `CKA_VALUE` (public) | After `CKA_VALUE` (private) | `(OSSLSLHDSAPublicKey*)pub` |
+| ML-KEM | After `CKA_VALUE` (public) | After `CKA_VALUE` (private) | `(OSSLMLKEMPublicKey*)pub` |
+
+**Notes:**
+- `CKA_PUBLIC_KEY_INFO` is never encrypted — it is always the SubjectPublicKeyInfo of the public key, stored in clear even on private key objects.
+- X.509 certificate case (TODO at `P11Objects.cpp:428`) remains open — requires parsing `CKA_VALUE` (DER cert) at `C_CreateObject` time. Deferred.
+- New includes added to `SoftHSM_keygen.cpp`: `OSSLRSAPublicKey.h`, `OSSLECPublicKey.h`, `OSSLEDPublicKey.h`, `<openssl/x509.h>`.
+
+---
+
+### 1.13 G-PK1 — `CKM_SP800_108_COUNTER_KDF` — NIST SP 800-108 Counter KDF ✓ RESOLVED
+
+**Need:** PKCS#11 v3.2 §2.44 defines three SP 800-108 KBKDF mechanisms. Counter mode
+(`CKM_SP800_108_COUNTER_KDF = 0x000003ac`) is the most widely deployed — used in
+Microsoft CNG, AWS KMS, PKCS#11 HSM interop scenarios. OpenSSL's `ossl_kdf_kbkdf_functions`
+is confirmed present in the WASM `libcrypto.a`.
+
+**OpenSSL implementation:** `EVP_KDF_fetch(NULL, "KBKDF", NULL)` + `EVP_KDF_derive()` with:
+- `OSSL_KDF_PARAM_MODE = "COUNTER"`
+- `OSSL_KDF_PARAM_MAC = "HMAC"` or `"CMAC"`
+- `OSSL_KDF_PARAM_DIGEST` (for HMAC) or `OSSL_KDF_PARAM_CIPHER` (for CMAC)
+- `OSSL_KDF_PARAM_KEY` = base key bytes (IKM = Ki)
+- `OSSL_KDF_PARAM_SALT` = concatenated `CK_SP800_108_BYTE_ARRAY` params (label/context)
+- `OSSL_KDF_PARAM_KBKDF_R` = counter width in bits (from `CK_SP800_108_COUNTER_FORMAT`, default 32)
+
+**CK_SP800_108_KDF_PARAMS parsing:**
+- `CK_SP800_108_BYTE_ARRAY` data params → concatenated into fixed-input buffer (label ∥ context)
+- `CK_SP800_108_ITERATION_VARIABLE` param → optional `CK_SP800_108_COUNTER_FORMAT` for counter width
+- `CK_SP800_108_DKM_LENGTH` and `CK_SP800_108_KEY_HANDLE` → silently skipped (not supported)
+- `pAdditionalDerivedKeys` / `ulAdditionalDerivedKeys` → must be 0/NULL (not supported)
+
+| Component | File | Change |
+| --- | --- | --- |
+| Mechanism registry | `SoftHSM_slots.cpp` after `CKM_HKDF_DERIVE` | `CKM_SP800_108_COUNTER_KDF` registered |
+| C_DeriveKey handler | `SoftHSM_keygen.cpp` before HKDF block | Full counter KDF handler (~130 LOC) |
+| Constant | `softhsm.ts` | `CKM_SP800_108_COUNTER_KDF = 0x3ac`, feedback/double-pipeline constants, `CK_SP800_108_ITERATION_VARIABLE`, `CK_SP800_108_BYTE_ARRAY` |
+| Helper | `softhsm.ts` | `hsm_kbkdf(M, hSession, baseKeyHandle, prfType, fixedInput?, keyLen?)` |
+| Learning module | `hsmConstants.ts` | Added `ckm-sp800-108-counter-kdf` entry |
+
+**PRFs supported:** `CKM_SHA256_HMAC`, `CKM_SHA384_HMAC`, `CKM_SHA512_HMAC`, `CKM_SHA_1_HMAC`, `CKM_SHA3_*_HMAC` (via `ckmToDigestName`); `CKM_AES_CMAC` (AES-128/192/256 auto-detected from key size).
 
 ---
 
