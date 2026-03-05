@@ -107,12 +107,21 @@ major extensions:
 | `CKM_HASH_SLH_DSA_SHA{224,256,384,512}` | `0x36–0x39` | Pre-hash SLH-DSA with fixed hash |
 | `CKM_HASH_SLH_DSA_SHA3_{224,256,384,512}` | `0x3a–0x3d` | Pre-hash SLH-DSA with SHA-3 |
 | `CKM_HASH_SLH_DSA_SHAKE{128,256}` | `0x3e–0x3f` | Pre-hash SLH-DSA with SHAKE |
+| `CKM_HKDF_DERIVE` | `0x0000402a` | HMAC-based KDF (RFC 5869) — extract + expand; `C_DeriveKey` |
+| `CKM_SP800_108_COUNTER_KDF` | `0x000003ac` | NIST SP 800-108 counter mode KBKDF; `C_DeriveKey` |
+| `CKM_SP800_108_FEEDBACK_KDF` | `0x000003ad` | NIST SP 800-108 feedback mode KBKDF (optional IV); `C_DeriveKey` |
+| `CKM_ECDH1_COFACTOR_DERIVE` | `0x00001051` | Cofactor ECDH (NIST SP 800-56A §5.7.1.2); `C_DeriveKey` |
 
 ### 2.4 Classic algorithms (retained from SoftHSM2)
 
 RSA (1024–4096 bit), ECDSA (P-256/P-384/P-521/Ed25519/Ed448), ECDH (X25519/X448),
-AES-CBC/GCM (128/192/256 bit), HMAC-{SHA1,SHA256,SHA384,SHA512},
+AES-CBC/GCM/CTR (128/192/256 bit), HMAC-{SHA1,SHA256,SHA384,SHA512},
 SHA-{1,224,256,384,512} digest.
+
+**Key derivation additions**: `CKM_HKDF_DERIVE` (RFC 5869), `CKM_SP800_108_COUNTER_KDF`,
+`CKM_SP800_108_FEEDBACK_KDF` (NIST SP 800-108 counter and feedback KBKDF), and
+`CKM_ECDH1_COFACTOR_DERIVE` (cofactor ECDH per NIST SP 800-56A §5.7.1.2) are supported
+via `C_DeriveKey`. All use OpenSSL EVP KDF / `EVP_PKEY_CTX` APIs — no legacy provider required.
 
 **Removed from SoftHSM2**: GOST, 3DES/DES, DSA, DH, Camellia.
 

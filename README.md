@@ -75,6 +75,7 @@ import CK from '@pqctoday/softhsm-wasm/constants'
 | Message Encrypt/Decrypt API | Not supported | **Implemented** (AES-GCM per-message AEAD) |
 | C_VerifySignatureInit / C_VerifySignature | Not supported | **Implemented** (v3.2 pre-bound verify) |
 | C_WrapKeyAuthenticated / C_UnwrapKeyAuthenticated | Not supported | **Implemented** (v3.2 AES-GCM key wrap) |
+| Key derivation (HKDF, KBKDF, cofactor ECDH) | Not supported | **`CKM_HKDF_DERIVE`, `CKM_SP800_108_COUNTER_KDF`, `CKM_SP800_108_FEEDBACK_KDF`, `CKM_ECDH1_COFACTOR_DERIVE`** |
 | GOST/DES/DSA/DH | Included | Removed (focused codebase) |
 | WASM build | Not supported | **Emscripten target** |
 | npm package | N/A | **@pqctoday/softhsm-wasm** |
@@ -207,6 +208,23 @@ C_WrapKeyAuthenticated()
 C_UnwrapKeyAuthenticated()
 ```
 
+### Key Derivation
+
+```c
+// HKDF (RFC 5869) — extract + expand (PKCS#11 v3.2 §2.41)
+CKM_HKDF_DERIVE            = 0x0000402a
+
+// NIST SP 800-108 Counter mode KBKDF — K(i) = PRF(K, i ∥ Label ∥ Context)
+CKM_SP800_108_COUNTER_KDF  = 0x000003ac
+
+// NIST SP 800-108 Feedback mode KBKDF — K(i) = PRF(K, K(i−1) ∥ Label ∥ Context)
+CKM_SP800_108_FEEDBACK_KDF = 0x000003ad
+
+// Cofactor ECDH — multiplies shared secret by curve cofactor before KDF
+// Eliminates small-subgroup attacks per NIST SP 800-56A §5.7.1.2
+CKM_ECDH1_COFACTOR_DERIVE  = 0x00001051
+```
+
 ## Known Limitations
 
 - **Stateful hash-based signatures** (HSS, XMSS): Not implemented — these require persistent state management outside the scope of a software HSM.
@@ -237,6 +255,9 @@ C_UnwrapKeyAuthenticated()
   - [x] `C_WrapKeyAuthenticated` / `C_UnwrapKeyAuthenticated` ([#20](https://github.com/pqctoday/softhsmv3/issues/20))
   - [x] `C_LoginUser` / `C_SessionCancel` — v3.0 session management ([#21](https://github.com/pqctoday/softhsmv3/issues/21))
   - [x] `C_VerifySignatureFinal` / `C_VerifySignatureUpdate` multi-part pre-bound verify ([#22](https://github.com/pqctoday/softhsmv3/issues/22))
+  - [x] `CKM_HKDF_DERIVE` — HMAC-based KDF (RFC 5869) via OpenSSL EVP HKDF
+  - [x] `CKM_SP800_108_COUNTER_KDF` / `CKM_SP800_108_FEEDBACK_KDF` — NIST SP 800-108 counter and feedback KBKDF
+  - [x] `CKM_ECDH1_COFACTOR_DERIVE` — cofactor ECDH via `EVP_PKEY_CTX_set_ecdh_cofactor_mode`
 
 ## Building (Native)
 

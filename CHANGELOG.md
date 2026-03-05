@@ -10,6 +10,23 @@ Versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `CKM_SP800_108_FEEDBACK_KDF` (`0x000003ad`) — NIST SP 800-108 §4.2 feedback mode KBKDF;
+  `CK_SP800_108_FEEDBACK_KDF_PARAMS` parser with optional IV/seed (`OSSL_KDF_PARAM_SEED`);
+  OpenSSL KBKDF `MODE=FEEDBACK`; registered in `SoftHSM_slots.cpp` (G-PK2)
+- `CKM_ECDH1_COFACTOR_DERIVE` (`0x00001051`) — cofactor ECDH key agreement per NIST SP 800-56A
+  §5.7.1.2; `OSSLECDH::deriveKeyWithCofactor()` inserts `EVP_PKEY_CTX_set_ecdh_cofactor_mode(ctx, 1)`;
+  eliminates small-subgroup attacks on non-prime-order curves; registered in `SoftHSM_slots.cpp` (G-PK4)
+
+### Fixed
+- **`C_DeriveKey` validation switch** (`SoftHSM_keygen.cpp`): Added missing `case` labels for
+  `CKM_HKDF_DERIVE`, `CKM_SP800_108_COUNTER_KDF`, `CKM_SP800_108_FEEDBACK_KDF`, and
+  `CKM_ECDH1_COFACTOR_DERIVE` in the pre-dispatch `switch(pMechanism->mechanism)` block;
+  without these labels the handlers added for G-5G3, G-PK1, G-PK2, and G-PK4 were
+  unreachable — `C_DeriveKey` returned `CKR_MECHANISM_INVALID` for all four mechanisms
+
+---
+
+### Added (community / project)
 - `CONTRIBUTING.md` — PR process, code style, sanitizer build instructions
 - `SECURITY.md` — vulnerability disclosure channel and security design notes
 - `CODE_OF_CONDUCT.md` — Contributor Covenant v2.1
