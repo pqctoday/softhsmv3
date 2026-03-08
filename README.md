@@ -2,6 +2,8 @@
 
 A modernized fork of [SoftHSM2](https://github.com/softhsm/SoftHSMv2) with **OpenSSL 3.x**, **PKCS#11 v3.2**, and **post-quantum cryptography** support — compiled to WebAssembly for use in browsers and Node.js.
 
+SoftHSMv3 ships two WASM engines with identical PKCS#11 APIs: a **C++/Emscripten** engine (OpenSSL 3.6 backend) and a **pure-Rust** engine (RustCrypto backend, ~336 KB). Both produce the same `_C_*` function exports and are drop-in interchangeable.
+
 ## Installation
 
 ```bash
@@ -77,7 +79,8 @@ import CK from '@pqctoday/softhsm-wasm/constants'
 | C_WrapKeyAuthenticated / C_UnwrapKeyAuthenticated | Not supported | **Implemented** (v3.2 AES-GCM key wrap) |
 | Key derivation (HKDF, KBKDF, cofactor ECDH) | Not supported | **`CKM_HKDF_DERIVE`, `CKM_SP800_108_COUNTER_KDF`, `CKM_SP800_108_FEEDBACK_KDF`, `CKM_ECDH1_COFACTOR_DERIVE`** |
 | GOST/DES/DSA/DH | Included | Removed (focused codebase) |
-| WASM build | Not supported | **Emscripten target** |
+| WASM build | Not supported | **Emscripten + Rust `wasm32-unknown-unknown`** |
+| Rust WASM engine | N/A | **Pure Rust (~336 KB), drop-in parity** |
 | npm package | N/A | **@pqctoday/softhsm-wasm** |
 
 ## PQC Algorithms
@@ -225,6 +228,150 @@ CKM_SP800_108_FEEDBACK_KDF = 0x000003ad
 CKM_ECDH1_COFACTOR_DERIVE  = 0x00001051
 ```
 
+## Rust WASM Engine (`rust/`)
+
+The Rust engine is a pure-Rust reimplementation of the SoftHSMv3 PKCS#11 surface, compiled to `wasm32-unknown-unknown` via `wasm-bindgen`. It replaces the entire OpenSSL backend with native RustCrypto crates, producing a standalone ~336 KB `.wasm` binary with zero C dependencies.
+
+### Why Two Engines?
+
+| | C++/Emscripten | Rust |
+| --- | --- | --- |
+| Crypto backend | OpenSSL 3.6 (EVP) | RustCrypto (`ml-kem`, `ml-dsa`, `slh-dsa`, `rsa`, `p256`, `p384`, `aes`, `sha2`, `sha3`) |
+| Build toolchain | Emscripten SDK + CMake + cross-compiled OpenSSL | `cargo build --target wasm32-unknown-unknown` |
+| WASM size | ~2 MB+ (OpenSSL linked) | **~336 KB** |
+| C FFI | Native | None (pure Rust) |
+| Pre-hash ML-DSA/SLH-DSA | Full (10 variants each) | Pure mode only (pre-hash planned) |
+
+### API Parity — The "Disguise" Technique
+
+Existing JavaScript consumers written against the C++ Emscripten build work without changing a single line of code. The Rust module uses `wasm-bindgen` with `js_name` to export functions with the same `_C_*` prefix that Emscripten generates:
+
+```rust
+#[wasm_bindgen(js_name = _C_GenerateKeyPair)]
+pub fn C_GenerateKeyPair(
+    _hSession: u32,
+    _pMechanism: *mut u8,
+    // ...
+) -> u32 { /* native Rust implementation */ }
+```
+
+Memory management (`_malloc`, `_free`), `HEAPU8`, `setValue`, and `getValue` are all provided by a thin JS shim that mirrors the Emscripten API surface.
+
+### Supported PKCS#11 Functions
+
+The Rust engine implements 48 PKCS#11 functions:
+
+| Category | Functions |
+| --- | --- |
+| Session | `C_Initialize`, `C_Finalize`, `C_GetSlotList`, `C_InitToken`, `C_OpenSession`, `C_CloseSession`, `C_Login`, `C_Logout`, `C_InitPIN`, `C_GetSessionInfo`, `C_GetTokenInfo` |
+| Mechanism | `C_GetMechanismList`, `C_GetMechanismInfo` |
+| Key Generation | `C_GenerateKeyPair`, `C_GenerateKey` |
+| KEM | `C_EncapsulateKey`, `C_DecapsulateKey` |
+| Sign/Verify | `C_SignInit`, `C_Sign`, `C_VerifyInit`, `C_Verify` |
+| Message Sign/Verify | `C_MessageSignInit`, `C_SignMessage`, `C_MessageSignFinal`, `C_MessageVerifyInit`, `C_VerifyMessage`, `C_MessageVerifyFinal` |
+| Encrypt/Decrypt | `C_EncryptInit`, `C_Encrypt`, `C_DecryptInit`, `C_Decrypt` |
+| Digest | `C_DigestInit`, `C_DigestUpdate`, `C_DigestFinal`, `C_Digest` |
+| Object | `C_CreateObject`, `C_DestroyObject`, `C_GetAttributeValue`, `C_FindObjectsInit`, `C_FindObjects`, `C_FindObjectsFinal` |
+| Key Management | `C_DeriveKey`, `C_WrapKey`, `C_UnwrapKey` |
+| Utility | `C_GenerateRandom` |
+
+### Supported Algorithms
+
+**Post-Quantum:**
+
+- ML-KEM-512/768/1024 (keygen, encapsulate, decapsulate)
+- ML-DSA-44/65/87 (keygen, sign, verify)
+- SLH-DSA — all 12 parameter sets: SHA2/SHAKE x 128/192/256 x s/f (keygen, sign, verify)
+
+**Classical:**
+
+- RSA (PKCS#1 v1.5, OAEP, PSS — keygen + sign/verify)
+- ECDSA P-256/P-384 (keygen, sign, verify)
+- Ed25519 (keygen, sign, verify)
+- ECDH P-256 + X25519 (key agreement via `C_DeriveKey`)
+- AES-128/192/256 (GCM, CBC-PAD, Key Wrap)
+- SHA-256/384/512, SHA3-256/512 (digest)
+- HMAC-SHA256/384/512, HMAC-SHA3-256/512
+- HKDF (RFC 5869)
+
+### Rust Crate Dependencies
+
+From `rust/Cargo.toml`:
+
+| Crate | Purpose |
+| --- | --- |
+| `ml-kem` 0.2.3 | FIPS 203 key encapsulation |
+| `ml-dsa` =0.1.0-rc.7 | FIPS 204 digital signatures |
+| `slh-dsa` =0.2.0-rc.4 | FIPS 205 hash-based signatures |
+| `rsa` 0.9 | RSA PKCS#1 / OAEP / PSS |
+| `p256`, `p384` 0.13 | NIST curve ECDSA + ECDH |
+| `ed25519-dalek` 2.1 | Ed25519 signatures |
+| `x25519-dalek` 2.0 | X25519 key agreement |
+| `aes` + `aes-gcm` + `cbc` + `aes-kw` | AES modes |
+| `sha2`, `sha3`, `hmac` | Digest and MAC |
+| `wasm-bindgen` 0.2.92 | WASM ↔ JS bridge |
+| `getrandom` 0.2 (js feature) | Browser-compatible CSPRNG |
+
+### Building the Rust Engine
+
+```bash
+# Prerequisites: Rust toolchain + wasm-pack
+rustup target add wasm32-unknown-unknown
+cargo install wasm-pack
+
+# Build
+cd rust
+wasm-pack build --target web --release
+
+# Output: rust/pkg/
+#   softhsmrustv3_bg.wasm  (~336 KB)
+#   softhsmrustv3.js       (JS bindings)
+#   softhsmrustv3.d.ts     (TypeScript types)
+```
+
+> **Note:** `wasm-opt` is disabled in `Cargo.toml` because the PQC crates use bulk-memory WebAssembly instructions (`memory.copy`, `memory.fill`) that `wasm-opt` does not yet support. V8 (Chrome/Node.js) handles these natively.
+
+### Testing
+
+```bash
+# Unit test (native, not WASM)
+cd rust
+cargo test
+
+# Integration test — Rust engine standalone
+node rust/test_harness.js
+
+# Parity test — C++ vs Rust cross-engine verification
+# Generates keys in one engine, operates in the other, verifies match
+node tests/parity-wasm.mjs
+```
+
+The parity test (`tests/parity-wasm.mjs`) performs cross-engine verification:
+
+1. **ML-KEM:** Rust generates keypair -> C++ encapsulates -> Rust decapsulates -> shared secrets must match
+2. **ML-DSA:** C++ generates keypair + signs message -> Rust imports public key + verifies signature
+
+### Architecture
+
+```text
+rust/
+  Cargo.toml           # Dependencies, wasm-pack config, release profile
+  src/
+    lib.rs             # All PKCS#11 functions (~1,724 lines)
+  pkg/                 # wasm-pack output (generated)
+    softhsmrustv3_bg.wasm
+    softhsmrustv3.js
+    softhsmrustv3.d.ts
+  test_harness.js      # Standalone integration test
+  tests/
+    pqc_api_test.rs    # Native Rust unit tests
+tests/
+  parity-wasm.mjs      # Cross-engine C++ ↔ Rust parity verification
+softhsmrustv3design.md  # Detailed architecture design document
+```
+
+Internal state uses thread-local `RefCell<HashMap<u32, Vec<u8>>>` for the object store, with integer handles returned to JS callers. All cryptographic operations execute entirely within WASM linear memory, isolated from the JavaScript heap.
+
 ## Known Limitations
 
 - **Stateful hash-based signatures** (HSS, XMSS): Not implemented — these require persistent state management outside the scope of a software HSM.
@@ -258,6 +405,7 @@ CKM_ECDH1_COFACTOR_DERIVE  = 0x00001051
   - [x] `CKM_HKDF_DERIVE` — HMAC-based KDF (RFC 5869) via OpenSSL EVP HKDF
   - [x] `CKM_SP800_108_COUNTER_KDF` / `CKM_SP800_108_FEEDBACK_KDF` — NIST SP 800-108 counter and feedback KBKDF
   - [x] `CKM_ECDH1_COFACTOR_DERIVE` — cofactor ECDH via `EVP_PKEY_CTX_set_ecdh_cofactor_mode`
+- [x] Phase 8: Pure-Rust WASM engine (`rust/`) — drop-in parity with C++ Emscripten build
 
 ## Building (Native)
 
@@ -269,7 +417,7 @@ make
 make check
 ```
 
-## Building (WASM)
+## Building (WASM — C++/Emscripten)
 
 ```bash
 # Requires Emscripten SDK + OpenSSL 3.6 cross-compiled for WASM
@@ -278,14 +426,29 @@ emcmake cmake .. -DWITH_CRYPTO_BACKEND=openssl -DENABLE_MLKEM=ON -DENABLE_MLDSA=
 emmake make
 ```
 
+## Building (WASM — Rust)
+
+```bash
+# Requires Rust toolchain + wasm-pack
+rustup target add wasm32-unknown-unknown
+cargo install wasm-pack
+
+cd rust
+wasm-pack build --target web --release
+# Output: rust/pkg/softhsmrustv3_bg.wasm (~336 KB)
+```
+
 ## References
 
-- [PKCS#11 v3.2 Specification (CSD01)](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/csd01/pkcs11-spec-v3.2-csd01.html)
+- [PKCS#11 v3.2 Specification](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/pkcs11-spec-v3.2.html)
+- [PKCS#11 v3.2 pkcs11t.h](https://docs.oasis-open.org/pkcs11/pkcs11-spec/v3.2/include/pkcs11-v3.2/pkcs11t.h) — canonical constant values
 - [FIPS 203: ML-KEM Standard](https://csrc.nist.gov/pubs/fips/203/final)
 - [FIPS 204: ML-DSA Standard](https://csrc.nist.gov/pubs/fips/204/final)
 - [FIPS 205: SLH-DSA Standard](https://csrc.nist.gov/pubs/fips/205/final)
 - [OpenSSL 3.6 ML-KEM Documentation](https://docs.openssl.org/3.6/man7/EVP_PKEY-ML-KEM/)
 - [OpenSSL 3.6 ML-DSA Documentation](https://docs.openssl.org/3.6/man7/EVP_PKEY-ML-DSA/)
+- [RustCrypto Organization](https://github.com/RustCrypto) — `ml-kem`, `ml-dsa`, `slh-dsa`, `rsa`, `aes` crates
+- [wasm-bindgen](https://rustwasm.github.io/docs/wasm-bindgen/) — Rust ↔ JS WASM bridge
 - [Original SoftHSM2](https://github.com/softhsm/SoftHSMv2)
 
 ## License
