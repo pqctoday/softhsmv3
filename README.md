@@ -78,6 +78,9 @@ import CK from '@pqctoday/softhsm-wasm/constants'
 | C_VerifySignatureInit / C_VerifySignature | Not supported | **Implemented** (v3.2 pre-bound verify) |
 | C_WrapKeyAuthenticated / C_UnwrapKeyAuthenticated | Not supported | **Implemented** (v3.2 AES-GCM key wrap) |
 | Key derivation (HKDF, KBKDF, cofactor ECDH) | Not supported | **`CKM_HKDF_DERIVE`, `CKM_SP800_108_COUNTER_KDF`, `CKM_SP800_108_FEEDBACK_KDF`, `CKM_ECDH1_COFACTOR_DERIVE`** |
+| PBKDF2 (`CKM_PKCS5_PBKD2`) | Not supported | **Implemented** — HMAC-SHA{1/224/256/384/512} PRF; BIP39 / SLIP-0010 seed derivation |
+| ECDH1 with KDF (`CKD_SHA*_KDF`) | Not supported | **Implemented** — X9.63 SHA{1/256/384/512} KDF on `CKM_ECDH1_DERIVE`; 5G SUCI deconcealment (TS 33.501 §6.12.2) |
+| SHA-3 signature variants | Not supported | **C++:** `CKM_ECDSA_SHA3_224/256/384/512`, `CKM_RSA_SHA3_224/256/384/512_PKCS/_PKCS_PSS` — **Rust:** `CKM_ECDSA_SHA3_224/256/384/512` |
 | GOST/DES/DSA/DH | Included | Removed (focused codebase) |
 | WASM build | Not supported | **Emscripten + Rust `wasm32-unknown-unknown`** |
 | Rust WASM engine | N/A | **Pure Rust (~336 KB), drop-in parity** |
@@ -211,9 +214,41 @@ C_WrapKeyAuthenticated()
 C_UnwrapKeyAuthenticated()
 ```
 
+### Classical Signatures — SHA-3 variants
+
+```c
+// ECDSA with SHA-3 pre-hash (C++ and Rust engines)
+CKM_ECDSA_SHA3_224         = 0x00001047
+CKM_ECDSA_SHA3_256         = 0x00001048
+CKM_ECDSA_SHA3_384         = 0x00001049
+CKM_ECDSA_SHA3_512         = 0x0000104a
+
+// RSA PKCS#1 v1.5 with SHA-3 (C++ engine)
+CKM_RSA_SHA3_224_PKCS      = 0x0000004f
+CKM_RSA_SHA3_256_PKCS      = 0x00000050
+CKM_RSA_SHA3_384_PKCS      = 0x00000051
+CKM_RSA_SHA3_512_PKCS      = 0x00000052
+
+// RSA-PSS with SHA-3 (C++ engine)
+CKM_RSA_SHA3_224_PKCS_PSS  = 0x00000053
+CKM_RSA_SHA3_256_PKCS_PSS  = 0x00000054
+CKM_RSA_SHA3_384_PKCS_PSS  = 0x00000055
+CKM_RSA_SHA3_512_PKCS_PSS  = 0x00000056
+```
+
 ### Key Derivation
 
 ```c
+// PBKDF2 (RFC 2898) — password-based key derivation (PKCS#11 v3.2 §5.7.3.1)
+// PRFs: CKP_PKCS5_PBKD2_HMAC_{SHA1, SHA224, SHA256, SHA384, SHA512}
+// Typical use: BIP39 mnemonic → 64-byte seed, SLIP-0010 child keys
+// pPassword in CK_PKCS5_PBKD2_PARAMS2; hBaseKey must be 0
+CKM_PKCS5_PBKD2            = 0x000003b0
+
+// ECDH1 with X9.63 KDF variants — SharedInfo passed as OSSL_KDF_PARAM_INFO
+// Used for 5G SUCI deconcealment (Profile A: X25519, Profile B: P-256)
+CKM_ECDH1_DERIVE           = 0x00001050  // + CKD_SHA{1,256,384,512}_KDF
+
 // HKDF (RFC 5869) — extract + expand (PKCS#11 v3.2 §2.41)
 CKM_HKDF_DERIVE            = 0x0000402a
 
@@ -259,7 +294,7 @@ Memory management (`_malloc`, `_free`), `HEAPU8`, `setValue`, and `getValue` are
 
 ### Supported PKCS#11 Functions
 
-The Rust engine exports 63 PKCS#11 functions (47 fully implemented, 8 multi-part stubs, 8 admin stubs):
+The Rust engine exports 65 PKCS#11 functions (49 fully implemented, 8 multi-part stubs, 8 admin stubs):
 
 | Category | Functions |
 | --- | --- |
@@ -272,7 +307,7 @@ The Rust engine exports 63 PKCS#11 functions (47 fully implemented, 8 multi-part
 | Encrypt/Decrypt | `C_EncryptInit`, `C_Encrypt`, `C_DecryptInit`, `C_Decrypt` |
 | Digest | `C_DigestInit`, `C_DigestUpdate`, `C_DigestFinal`, `C_Digest` |
 | Object | `C_CreateObject`, `C_DestroyObject`, `C_GetAttributeValue`, `C_FindObjectsInit`, `C_FindObjects`, `C_FindObjectsFinal` |
-| Key Management | `C_DeriveKey`, `C_WrapKey`, `C_UnwrapKey` |
+| Key Management | `C_DeriveKey`, `C_WrapKey`, `C_UnwrapKey`, `C_WrapKeyAuthenticated`, `C_UnwrapKeyAuthenticated` |
 | Utility | `C_GenerateRandom` |
 | Multi-part (stubs) | `C_SignUpdate`, `C_SignFinal`, `C_VerifyUpdate`, `C_VerifyFinal`, `C_EncryptUpdate`, `C_EncryptFinal`, `C_DecryptUpdate`, `C_DecryptFinal` |
 | Admin (stubs) | `C_SetPIN`, `C_CopyObject`, `C_GetObjectSize`, `C_SetAttributeValue`, `C_DigestKey`, `C_GetOperationState`, `C_SetOperationState`, `C_SeedRandom` |
@@ -293,10 +328,12 @@ Multi-part and admin stubs return `CKR_FUNCTION_NOT_SUPPORTED`. The browser play
 - ECDSA P-256/P-384 (keygen, sign, verify) — including ECDSA-SHA3-224/256/384/512
 - Ed25519 (keygen, sign, verify)
 - ECDH P-256 + X25519 (key agreement via `C_DeriveKey`)
-- AES-128/256 (GCM, CBC-PAD, CTR, Key Wrap, Key Wrap with Padding)
+- AES-128/256 (GCM, CBC-PAD, CTR, Key Wrap, Key Wrap with Padding, Authenticated Wrap/Unwrap)
 - SHA-256/384/512, SHA3-256/512 (digest)
 - HMAC-SHA256/384/512, HMAC-SHA3-256/512
-- HKDF (RFC 5869), PBKDF2, SP 800-108 Counter/Feedback KDF
+- HKDF (RFC 5869), PBKDF2 (`CKM_PKCS5_PBKD2`), SP 800-108 Counter/Feedback KDF
+
+> **Note:** RSA-SHA3 variants (`CKM_RSA_SHA3_*_PKCS`, `CKM_RSA_SHA3_*_PKCS_PSS`) and ECDH1 with X9.63 KDF are C++ engine only.
 
 **62 mechanisms** registered in `C_GetMechanismList` — 100% have implementations.
 
@@ -437,6 +474,16 @@ Internal state uses thread-local `RefCell<HashMap<u32, HashMap<u32, Vec<u8>>>>` 
   - [x] Rust: `C_DestroyObject` state cleanup; `C_DeriveKey` `CKA_DERIVE` check
   - [x] Rust: output keys from KEM/derive carry proper attributes (`CKA_EXTRACTABLE`, `CKA_CLASS`, etc.)
   - [x] Rust: 10 admin function stubs + 8 multi-part stubs (63 total exports)
+- [x] Phase 10: SHA-3 variants, PBKDF2, 5G KDF, key wrapping completeness
+  - [x] C++: `CKM_ECDSA_SHA3_224/256/384/512` — ECDSA with SHA-3 hash
+  - [x] C++: `CKM_RSA_SHA3_224/256/384/512_PKCS` and `_PKCS_PSS` — RSA PKCS#1 v1.5 and PSS with SHA-3
+  - [x] C++ + Rust: `CKM_PKCS5_PBKD2` — PBKDF2 key derivation; HMAC-SHA{1/224/256/384/512} PRF; BIP39 / SLIP-0010
+  - [x] C++: `CKD_SHA{1,256,384,512}_KDF` on `CKM_ECDH1_DERIVE` — X9.63 KDF for 5G SUCI deconcealment (TS 33.501 §6.12.2)
+  - [x] C++: `CKM_AES_KEY_WRAP_PAD` registered in `prepareSupportedMechanisms()`
+  - [x] Rust: `C_WrapKeyAuthenticated` / `C_UnwrapKeyAuthenticated` — AES-GCM authenticated key wrap (PKCS#11 v3.2 §5.18.6–7)
+  - [x] Rust: `C_WrapKey` extended to accept `CKM_RSA_PKCS_OAEP` for indirect RSA+KEK wrapping
+  - [x] Rust: `CKM_AES_KEY_WRAP_KWP` case added to `C_GetMechanismInfo`
+  - [x] Rust: 65 total PKCS#11 exports (49 implemented, 8 multi-part stubs, 8 admin stubs)
 
 ## Building (Native)
 
