@@ -735,7 +735,7 @@ pub fn C_GetMechanismInfo(_slot_id: u32, mech_type: u32, p_info: *mut u8) -> u32
         CKM_EDDSA => (255, 255, 0x00000800 | 0x00002000),
         CKM_AES_KEY_GEN => (16, 32, 0x00008000),
         CKM_AES_GCM | CKM_AES_CBC_PAD => (16, 32, 0x00000100 | 0x00000200),
-        CKM_AES_KEY_WRAP => (16, 32, 0x00040000 | 0x00020000),
+        CKM_AES_KEY_WRAP | CKM_AES_KEY_WRAP_KWP | CKM_AES_KEY_WRAP_PAD_LEGACY => (16, 32, 0x00040000 | 0x00020000),
         _ => return CKR_MECHANISM_INVALID,
     };
     unsafe {
@@ -3508,7 +3508,9 @@ pub fn C_WrapKey(
         let mech_type = *(p_mechanism as *const u32);
         let is_kwp = mech_type == CKM_AES_KEY_WRAP_KWP
             || mech_type == CKM_AES_KEY_WRAP_PAD_LEGACY;
-        if mech_type != CKM_AES_KEY_WRAP && !is_kwp {
+        let is_aes_wrap = mech_type == CKM_AES_KEY_WRAP || is_kwp;
+        let is_rsa_oaep = mech_type == CKM_RSA_PKCS_OAEP;
+        if !is_aes_wrap && !is_rsa_oaep {
             return CKR_MECHANISM_INVALID;
         }
 
@@ -3543,9 +3545,42 @@ pub fn C_WrapKey(
             None => return CKR_ARGUMENTS_BAD,
         };
 
-        use aes::cipher::generic_array::GenericArray;
-
-        let wrapped = if is_kwp {
+        let wrapped = if is_rsa_oaep {
+            // RSA-OAEP wrapping — encrypt key value with RSA public key
+            let p_param = *(p_mechanism.add(4) as *const u32) as usize as *const u8;
+            let ul_param_len = *(p_mechanism.add(8) as *const u32);
+            let hash_alg = if !p_param.is_null() && ul_param_len >= 4 {
+                *(p_param as *const u32)
+            } else {
+                CKM_SHA256
+            };
+            if wrapping_key.len() < 8 {
+                return CKR_KEY_TYPE_INCONSISTENT;
+            }
+            let n_len =
+                u32::from_le_bytes([wrapping_key[0], wrapping_key[1], wrapping_key[2], wrapping_key[3]])
+                    as usize;
+            if wrapping_key.len() < 4 + n_len + 1 {
+                return CKR_KEY_TYPE_INCONSISTENT;
+            }
+            let n = rsa::BigUint::from_bytes_be(&wrapping_key[4..4 + n_len]);
+            let e = rsa::BigUint::from_bytes_be(&wrapping_key[4 + n_len..]);
+            let pk = match rsa::RsaPublicKey::new(n, e) {
+                Ok(k) => k,
+                Err(_) => return CKR_KEY_TYPE_INCONSISTENT,
+            };
+            let mut rng = rand::rngs::OsRng;
+            let oaep = match hash_alg {
+                CKM_SHA384 => rsa::Oaep::new::<sha2::Sha384>(),
+                CKM_SHA512 => rsa::Oaep::new::<sha2::Sha512>(),
+                _ => rsa::Oaep::new::<sha2::Sha256>(),
+            };
+            match pk.encrypt(&mut rng, oaep, &key_to_wrap) {
+                Ok(ct) => ct,
+                Err(_) => return CKR_FUNCTION_FAILED,
+            }
+        } else if is_kwp {
+            use aes::cipher::generic_array::GenericArray;
             // AES-KWP (RFC 5649) — supports arbitrary-length data
             if key_to_wrap.is_empty() {
                 return CKR_DATA_INVALID;
@@ -3564,6 +3599,7 @@ pub fn C_WrapKey(
                 Err(_) => return CKR_FUNCTION_FAILED,
             }
         } else {
+            use aes::cipher::generic_array::GenericArray;
             // AES-KW (RFC 3394) — requires data to be multiple of 8 and >= 16
             if key_to_wrap.len() % 8 != 0 || key_to_wrap.len() < 16 {
                 return CKR_DATA_INVALID;
@@ -3619,7 +3655,9 @@ pub fn C_UnwrapKey(
         let mech_type = *(p_mechanism as *const u32);
         let is_kwp = mech_type == CKM_AES_KEY_WRAP_KWP
             || mech_type == CKM_AES_KEY_WRAP_PAD_LEGACY;
-        if mech_type != CKM_AES_KEY_WRAP && !is_kwp {
+        let is_aes_wrap = mech_type == CKM_AES_KEY_WRAP || is_kwp;
+        let is_rsa_oaep = mech_type == CKM_RSA_PKCS_OAEP;
+        if !is_aes_wrap && !is_rsa_oaep {
             return CKR_MECHANISM_INVALID;
         }
 
@@ -3640,9 +3678,31 @@ pub fn C_UnwrapKey(
         };
         let wrapped_data = std::slice::from_raw_parts(p_wrapped_key, ul_wrapped_key_len as usize);
 
-        use aes::cipher::generic_array::GenericArray;
-
-        let key_value = if is_kwp {
+        let key_value = if is_rsa_oaep {
+            // RSA-OAEP unwrapping — decrypt wrapped key with RSA private key
+            let p_param = *(p_mechanism.add(4) as *const u32) as usize as *const u8;
+            let ul_param_len = *(p_mechanism.add(8) as *const u32);
+            let hash_alg = if !p_param.is_null() && ul_param_len >= 4 {
+                *(p_param as *const u32)
+            } else {
+                CKM_SHA256
+            };
+            use rsa::pkcs8::DecodePrivateKey;
+            let sk = match rsa::RsaPrivateKey::from_pkcs8_der(&unwrapping_key) {
+                Ok(k) => k,
+                Err(_) => return CKR_KEY_TYPE_INCONSISTENT,
+            };
+            let oaep = match hash_alg {
+                CKM_SHA384 => rsa::Oaep::new::<sha2::Sha384>(),
+                CKM_SHA512 => rsa::Oaep::new::<sha2::Sha512>(),
+                _ => rsa::Oaep::new::<sha2::Sha256>(),
+            };
+            match sk.decrypt(oaep, wrapped_data) {
+                Ok(pt) => pt,
+                Err(_) => return CKR_FUNCTION_FAILED,
+            }
+        } else if is_kwp {
+            use aes::cipher::generic_array::GenericArray;
             // AES-KWP (RFC 5649) — supports arbitrary-length data
             if wrapped_data.len() < 16 {
                 return CKR_ARGUMENTS_BAD;
@@ -3661,6 +3721,7 @@ pub fn C_UnwrapKey(
                 Err(_) => return CKR_FUNCTION_FAILED,
             }
         } else {
+            use aes::cipher::generic_array::GenericArray;
             // AES-KW (RFC 3394)
             if wrapped_data.len() < 24 {
                 return CKR_ARGUMENTS_BAD;
@@ -3727,6 +3788,241 @@ pub fn C_UnwrapKey(
         }
 
         // Handle CKA_PARAMETER_SET for PQC keys
+        if let Some(ps_bytes) = attrs.get(&CKA_PARAMETER_SET).cloned() {
+            if ps_bytes.len() >= 4 {
+                let ps = u32::from_le_bytes([ps_bytes[0], ps_bytes[1], ps_bytes[2], ps_bytes[3]]);
+                store_param_set(&mut attrs, ps);
+            }
+        }
+
+        *ph_key = allocate_handle(attrs);
+    }
+    CKR_OK
+}
+
+// ── Authenticated key wrapping (PKCS#11 v3.2 §5.18.6 / §5.18.7) ────────────
+// C_WrapKeyAuthenticated wraps a key using an AEAD mechanism (AES-GCM).
+// C_UnwrapKeyAuthenticated unwraps, creating a new key object.
+// Signature follows pkcs11f.h exactly.
+
+#[wasm_bindgen(js_name = _C_WrapKeyAuthenticated)]
+pub fn C_WrapKeyAuthenticated(
+    _h_session: u32,
+    p_mechanism: *mut u8,
+    h_wrapping_key: u32,
+    h_key: u32,
+    _p_associated_data: *mut u8,
+    _ul_associated_data_len: u32,
+    p_wrapped_key: *mut u8,
+    pul_wrapped_key_len: *mut u32,
+) -> u32 {
+    unsafe {
+        if p_mechanism.is_null() {
+            return CKR_ARGUMENTS_BAD;
+        }
+        let mech_type = *(p_mechanism as *const u32);
+        if mech_type != CKM_AES_GCM {
+            return CKR_MECHANISM_INVALID;
+        }
+
+        // Parse CK_GCM_PARAMS from mechanism parameter
+        let p_param = *(p_mechanism.add(4) as *const u32) as usize as *const u8;
+        let ul_param_len = *(p_mechanism.add(8) as *const u32);
+        if p_param.is_null() || ul_param_len < 20 {
+            return CKR_ARGUMENTS_BAD;
+        }
+        let gcm = p_param as *const u32;
+        let iv_ptr = *gcm as usize as *const u8;
+        let iv_len = *gcm.add(1) as usize;
+        let iv = if !iv_ptr.is_null() && iv_len > 0 {
+            if iv_len != 12 {
+                return CKR_ARGUMENTS_BAD;
+            }
+            std::slice::from_raw_parts(iv_ptr, iv_len).to_vec()
+        } else {
+            vec![0u8; 12]
+        };
+
+        // Check CKA_WRAP on wrapping key
+        let can_wrap = OBJECTS.with(|o| {
+            o.borrow()
+                .get(&h_wrapping_key)
+                .map(|attrs| read_bool_attr(attrs, CKA_WRAP))
+                .unwrap_or(false)
+        });
+        if !can_wrap {
+            return CKR_KEY_FUNCTION_NOT_PERMITTED;
+        }
+
+        // Check CKA_EXTRACTABLE on target key
+        let extractable = OBJECTS.with(|o| {
+            o.borrow()
+                .get(&h_key)
+                .map(|attrs| read_bool_attr(attrs, CKA_EXTRACTABLE))
+                .unwrap_or(false)
+        });
+        if !extractable {
+            return CKR_KEY_UNEXTRACTABLE;
+        }
+
+        let wrapping_key = match get_object_value(h_wrapping_key) {
+            Some(v) => v,
+            None => return CKR_ARGUMENTS_BAD,
+        };
+        let key_to_wrap = match get_object_value(h_key) {
+            Some(v) => v,
+            None => return CKR_ARGUMENTS_BAD,
+        };
+
+        // AES-GCM encrypt
+        use aes_gcm::aead::generic_array::GenericArray;
+        use aes_gcm::{aead::Aead, Aes128Gcm, Aes256Gcm, KeyInit};
+        let nonce = GenericArray::from_slice(&iv);
+        let wrapped = match wrapping_key.len() {
+            16 => Aes128Gcm::new_from_slice(&wrapping_key)
+                .unwrap()
+                .encrypt(nonce, key_to_wrap.as_slice()),
+            32 => Aes256Gcm::new_from_slice(&wrapping_key)
+                .unwrap()
+                .encrypt(nonce, key_to_wrap.as_slice()),
+            _ => return CKR_KEY_TYPE_INCONSISTENT,
+        };
+        let wrapped = match wrapped {
+            Ok(ct) => ct,
+            Err(_) => return CKR_FUNCTION_FAILED,
+        };
+
+        // Length query or copy
+        if p_wrapped_key.is_null() {
+            *pul_wrapped_key_len = wrapped.len() as u32;
+            return CKR_OK;
+        }
+        if (*pul_wrapped_key_len as usize) < wrapped.len() {
+            *pul_wrapped_key_len = wrapped.len() as u32;
+            return CKR_BUFFER_TOO_SMALL;
+        }
+        std::ptr::copy_nonoverlapping(wrapped.as_ptr(), p_wrapped_key, wrapped.len());
+        *pul_wrapped_key_len = wrapped.len() as u32;
+    }
+    CKR_OK
+}
+
+#[wasm_bindgen(js_name = _C_UnwrapKeyAuthenticated)]
+pub fn C_UnwrapKeyAuthenticated(
+    _h_session: u32,
+    p_mechanism: *mut u8,
+    h_unwrapping_key: u32,
+    p_wrapped_key: *mut u8,
+    ul_wrapped_key_len: u32,
+    p_template: *mut u8,
+    ul_attribute_count: u32,
+    _p_associated_data: *mut u8,
+    _ul_associated_data_len: u32,
+    ph_key: *mut u32,
+) -> u32 {
+    unsafe {
+        if p_mechanism.is_null() {
+            return CKR_ARGUMENTS_BAD;
+        }
+        let mech_type = *(p_mechanism as *const u32);
+        if mech_type != CKM_AES_GCM {
+            return CKR_MECHANISM_INVALID;
+        }
+
+        // Parse CK_GCM_PARAMS from mechanism parameter
+        let p_param = *(p_mechanism.add(4) as *const u32) as usize as *const u8;
+        let ul_param_len = *(p_mechanism.add(8) as *const u32);
+        if p_param.is_null() || ul_param_len < 20 {
+            return CKR_ARGUMENTS_BAD;
+        }
+        let gcm = p_param as *const u32;
+        let iv_ptr = *gcm as usize as *const u8;
+        let iv_len = *gcm.add(1) as usize;
+        let iv = if !iv_ptr.is_null() && iv_len > 0 {
+            if iv_len != 12 {
+                return CKR_ARGUMENTS_BAD;
+            }
+            std::slice::from_raw_parts(iv_ptr, iv_len).to_vec()
+        } else {
+            vec![0u8; 12]
+        };
+
+        // Check CKA_UNWRAP on unwrapping key
+        let can_unwrap = OBJECTS.with(|o| {
+            o.borrow()
+                .get(&h_unwrapping_key)
+                .map(|attrs| read_bool_attr(attrs, CKA_UNWRAP))
+                .unwrap_or(false)
+        });
+        if !can_unwrap {
+            return CKR_KEY_FUNCTION_NOT_PERMITTED;
+        }
+
+        let unwrapping_key = match get_object_value(h_unwrapping_key) {
+            Some(v) => v,
+            None => return CKR_ARGUMENTS_BAD,
+        };
+        let wrapped_data = std::slice::from_raw_parts(p_wrapped_key, ul_wrapped_key_len as usize);
+
+        // AES-GCM decrypt
+        use aes_gcm::aead::generic_array::GenericArray;
+        use aes_gcm::{aead::Aead, Aes128Gcm, Aes256Gcm, KeyInit};
+        let nonce = GenericArray::from_slice(&iv);
+        let key_value = match unwrapping_key.len() {
+            16 => Aes128Gcm::new_from_slice(&unwrapping_key)
+                .unwrap()
+                .decrypt(nonce, wrapped_data),
+            32 => Aes256Gcm::new_from_slice(&unwrapping_key)
+                .unwrap()
+                .decrypt(nonce, wrapped_data),
+            _ => return CKR_KEY_TYPE_INCONSISTENT,
+        };
+        let key_value = match key_value {
+            Ok(pt) => pt,
+            Err(_) => return CKR_FUNCTION_FAILED,
+        };
+        let key_len = key_value.len() as u32;
+
+        // Parse template attributes (same as C_UnwrapKey)
+        let mut attrs = HashMap::new();
+        if !p_template.is_null() && ul_attribute_count > 0 {
+            let tmpl_ptr = p_template as *mut u32;
+            for i in 0..ul_attribute_count {
+                let attr_type = *tmpl_ptr.add((i * 3) as usize);
+                let val_ptr = *tmpl_ptr.add((i * 3 + 1) as usize) as usize as *const u8;
+                let val_len = *tmpl_ptr.add((i * 3 + 2) as usize);
+                if attr_type == CKA_VALUE { continue; }
+                if !val_ptr.is_null() && val_len > 0 {
+                    let mut v = vec![0u8; val_len as usize];
+                    std::ptr::copy_nonoverlapping(val_ptr, v.as_mut_ptr(), val_len as usize);
+                    attrs.insert(attr_type, v);
+                }
+            }
+        }
+
+        // Set key material from unwrap operation
+        attrs.insert(CKA_VALUE, key_value);
+
+        // Apply defaults for missing attributes
+        if !attrs.contains_key(&CKA_CLASS) {
+            store_ulong(&mut attrs, CKA_CLASS, CKO_SECRET_KEY);
+        }
+        if !attrs.contains_key(&CKA_KEY_TYPE) {
+            store_ulong(&mut attrs, CKA_KEY_TYPE, CKK_AES);
+        }
+        if !attrs.contains_key(&CKA_VALUE_LEN) {
+            store_ulong(&mut attrs, CKA_VALUE_LEN, key_len);
+        }
+        if !attrs.contains_key(&CKA_TOKEN) {
+            store_bool(&mut attrs, CKA_TOKEN, false);
+        }
+        if !attrs.contains_key(&CKA_EXTRACTABLE) {
+            store_bool(&mut attrs, CKA_EXTRACTABLE, true);
+        }
+        if !attrs.contains_key(&CKA_SENSITIVE) {
+            store_bool(&mut attrs, CKA_SENSITIVE, false);
+        }
+
         if let Some(ps_bytes) = attrs.get(&CKA_PARAMETER_SET).cloned() {
             if ps_bytes.len() >= 4 {
                 let ps = u32::from_le_bytes([ps_bytes[0], ps_bytes[1], ps_bytes[2], ps_bytes[3]]);
