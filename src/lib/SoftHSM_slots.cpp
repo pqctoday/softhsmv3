@@ -43,6 +43,8 @@
 #include "SessionObjectStore.h"
 #include "CryptoFactory.h"
 #include "SimpleConfigLoader.h"
+#include <stdexcept>
+#include "SimpleConfigLoader.h"
 #include "MutexFactory.h"
 #include "SecureMemoryRegistry.h"
 #include "cryptoki.h"
