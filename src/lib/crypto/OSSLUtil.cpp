@@ -185,22 +185,22 @@ int OSSL::byteString2oid(const ByteString& byteString)
 		/* The final PKCS#11 3.0 expects curve name encoded as PrintableString */
 		curve_name = d2i_ASN1_PRINTABLESTRING(NULL, &p, byteString.size());
 
-		if (strcmp((char *)curve_name->data, "edwards25519") == 0)
+		if (strcmp((char *)ASN1_STRING_get0_data(curve_name), "edwards25519") == 0)
 		{
 			return EVP_PKEY_ED25519;
 		}
 
-		if (strcmp((char *)curve_name->data, "curve25519") == 0)
+		if (strcmp((char *)ASN1_STRING_get0_data(curve_name), "curve25519") == 0)
 		{
 			return EVP_PKEY_X25519;
 		}
 
-		if (strcmp((char *)curve_name->data, "edwards448") == 0)
+		if (strcmp((char *)ASN1_STRING_get0_data(curve_name), "edwards448") == 0)
 		{
 			return EVP_PKEY_ED448;
 		}
 
-		if (strcmp((char *)curve_name->data, "curve448") == 0)
+		if (strcmp((char *)ASN1_STRING_get0_data(curve_name), "curve448") == 0)
 		{
 			return EVP_PKEY_X448;
 		}
