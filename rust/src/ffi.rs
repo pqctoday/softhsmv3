@@ -165,6 +165,41 @@ pub fn C_GetMechanismInfo(_slot_id: u32, mech_type: u32, p_info: *mut u8) -> u32
         CKM_AES_KEY_WRAP | CKM_AES_KEY_WRAP_KWP | CKM_AES_KEY_WRAP_PAD_LEGACY => {
             (16, 32, 0x00040000 | 0x00020000)
         }
+        CKM_AES_CTR => (16, 32, 0x00000100 | 0x00000200),
+        // ML-DSA pre-hash variants — same sign/verify capabilities as pure ML-DSA
+        CKM_HASH_ML_DSA_SHA224
+        | CKM_HASH_ML_DSA_SHA256
+        | CKM_HASH_ML_DSA_SHA384
+        | CKM_HASH_ML_DSA_SHA512
+        | CKM_HASH_ML_DSA_SHA3_224
+        | CKM_HASH_ML_DSA_SHA3_256
+        | CKM_HASH_ML_DSA_SHA3_384
+        | CKM_HASH_ML_DSA_SHA3_512
+        | CKM_HASH_ML_DSA_SHAKE128
+        | CKM_HASH_ML_DSA_SHAKE256 => (44, 87, 0x00000800 | 0x00002000),
+        // SLH-DSA pre-hash variants — same sign/verify capabilities as pure SLH-DSA
+        CKM_HASH_SLH_DSA_SHA224
+        | CKM_HASH_SLH_DSA_SHA256
+        | CKM_HASH_SLH_DSA_SHA384
+        | CKM_HASH_SLH_DSA_SHA512
+        | CKM_HASH_SLH_DSA_SHA3_224
+        | CKM_HASH_SLH_DSA_SHA3_256
+        | CKM_HASH_SLH_DSA_SHA3_384
+        | CKM_HASH_SLH_DSA_SHA3_512
+        | CKM_HASH_SLH_DSA_SHAKE128
+        | CKM_HASH_SLH_DSA_SHAKE256 => (128, 256, 0x00000800 | 0x00002000),
+        // ECDSA-SHA3 variants
+        CKM_ECDSA_SHA3_224
+        | CKM_ECDSA_SHA3_256
+        | CKM_ECDSA_SHA3_384
+        | CKM_ECDSA_SHA3_512 => (256, 384, 0x00000800 | 0x00002000),
+        // ECDH cofactor derivation
+        CKM_ECDH1_COFACTOR_DERIVE => (256, 384, 0x00080000),
+        // Key derivation functions
+        CKM_PKCS5_PBKD2
+        | CKM_HKDF_DERIVE
+        | CKM_SP800_108_COUNTER_KDF
+        | CKM_SP800_108_FEEDBACK_KDF => (1, 512, 0x00080000),
         _ => return CKR_MECHANISM_INVALID,
     };
     unsafe {
