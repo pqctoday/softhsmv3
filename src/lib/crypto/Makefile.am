@@ -68,6 +68,7 @@ libsofthsm_crypto_la_SOURCES +=	OSSLAES.cpp \
 				OSSLEVPSymmetricAlgorithm.cpp \
 				OSSLCMAC.cpp \
 				OSSLHMAC.cpp \
+				OSSLKMAC.cpp \
 				OSSLMD5.cpp \
 				OSSLRNG.cpp \
 				OSSLRSA.cpp \

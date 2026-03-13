@@ -79,6 +79,8 @@ static bool isMacMechanism(CK_MECHANISM_PTR pMechanism)
 		case CKM_SHA3_384_HMAC:
 		case CKM_SHA3_512_HMAC:
 		case CKM_AES_CMAC:
+		case CKM_KMAC_128:
+		case CKM_KMAC_256:
 			return true;
 		default:
 			return false;
@@ -114,6 +116,8 @@ static const MacMechInfo kMacMechTable[] = {
 	{ CKM_SHA3_384_HMAC, CKK_SHA3_384_HMAC, true,  48, MacAlgo::HMAC_SHA3_384 },
 	{ CKM_SHA3_512_HMAC, CKK_SHA3_512_HMAC, true,  64, MacAlgo::HMAC_SHA3_512 },
 	{ CKM_AES_CMAC,      CKK_AES,           false,  0, MacAlgo::CMAC_AES      },
+	{ CKM_KMAC_128,      CKK_GENERIC_SECRET,true,  16, MacAlgo::KMAC_128      },
+	{ CKM_KMAC_256,      CKK_GENERIC_SECRET,true,  32, MacAlgo::KMAC_256      },
 };
 
 /**

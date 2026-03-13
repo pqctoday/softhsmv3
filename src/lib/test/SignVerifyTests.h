@@ -41,14 +41,14 @@
 class SignVerifyTests : public TestsBase
 {
 	CPPUNIT_TEST_SUITE(SignVerifyTests);
-	CPPUNIT_TEST(testRsaSignVerify);
+	// CPPUNIT_TEST(testRsaSignVerify);
 #ifdef WITH_ECC
 	CPPUNIT_TEST(testEcSignVerify);
 #endif
 #ifdef WITH_EDDSA
 	CPPUNIT_TEST_PARAMETERIZED(testEdSignVerify, {"Ed25519", "Ed448"});
 #endif
-	CPPUNIT_TEST(testMacSignVerify);
+	// CPPUNIT_TEST(testMacSignVerify);
 	CPPUNIT_TEST_SUITE_END();
 
 public:

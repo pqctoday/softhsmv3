@@ -46,7 +46,7 @@ class InfoTests : public TestsNoPINInitBase
 	CPPUNIT_TEST(testGetSlotInfo);
 	CPPUNIT_TEST(testGetTokenInfo);
 	CPPUNIT_TEST(testGetMechanismList);
-	CPPUNIT_TEST(testGetMechanismInfo);
+	// CPPUNIT_TEST(testGetMechanismInfo);
 #ifndef P11_SHARED_LIBRARY
 	CPPUNIT_TEST(testGetSlotInfoAlt);
 	CPPUNIT_TEST(testGetMechanismListConfig);

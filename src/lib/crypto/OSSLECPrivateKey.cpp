@@ -163,14 +163,19 @@ EVP_PKEY* OSSLECPrivateKey::getOSSLKey()
 
 	int nid = EC_GROUP_get_curve_name(grp);
 	const char* curve_name = OBJ_nid2sn(nid);
-	EC_GROUP_free(grp);
 
 	if (curve_name == NULL)
+	{
+		EC_GROUP_free(grp);
 		return NULL;
+	}
 
 	BIGNUM* bn_d = OSSL::byteString2bn(d);
 	if (bn_d == NULL)
+	{
+		EC_GROUP_free(grp);
 		return NULL;
+	}
 
 	OSSL_PARAM_BLD* bld = OSSL_PARAM_BLD_new();
 	if (bld == NULL)
@@ -179,20 +184,46 @@ EVP_PKEY* OSSLECPrivateKey::getOSSLKey()
 		return NULL;
 	}
 
-	if (!OSSL_PARAM_BLD_push_utf8_string(bld, OSSL_PKEY_PARAM_GROUP_NAME,
-	                                      curve_name, strlen(curve_name)) ||
-	    !OSSL_PARAM_BLD_push_BN(bld, OSSL_PKEY_PARAM_PRIV_KEY, bn_d))
+	bool pld_ok = false;
+	unsigned char* pub_buf = NULL;
+	EC_POINT* pub_pt = EC_POINT_new(grp);
+	if (pub_pt != NULL && EC_POINT_mul(grp, pub_pt, bn_d, NULL, NULL, NULL) == 1)
 	{
+		size_t pub_len = EC_POINT_point2oct(grp, pub_pt, POINT_CONVERSION_UNCOMPRESSED, NULL, 0, NULL);
+		if (pub_len > 0)
+		{
+			pub_buf = (unsigned char*)malloc(pub_len);
+			if (pub_buf != NULL)
+			{
+				if (EC_POINT_point2oct(grp, pub_pt, POINT_CONVERSION_UNCOMPRESSED, pub_buf, pub_len, NULL) > 0)
+				{
+					if (OSSL_PARAM_BLD_push_utf8_string(bld, OSSL_PKEY_PARAM_GROUP_NAME, curve_name, 0) == 1 &&
+						OSSL_PARAM_BLD_push_BN(bld, OSSL_PKEY_PARAM_PRIV_KEY, bn_d) == 1 &&
+						OSSL_PARAM_BLD_push_octet_string(bld, OSSL_PKEY_PARAM_PUB_KEY, pub_buf, pub_len) == 1)
+					{
+						pld_ok = true;
+					}
+				}
+			}
+		}
+	}
+	if (pub_pt != NULL) EC_POINT_free(pub_pt);
+	EC_GROUP_free(grp);
+
+	if (!pld_ok)
+	{
+		if (pub_buf != NULL) free(pub_buf);
 		OSSL_PARAM_BLD_free(bld);
 		BN_clear_free(bn_d);
 		return NULL;
 	}
 
-	// bn_d must stay alive until OSSL_PARAM_BLD_to_param() copies it
+	// bn_d and pub_buf must stay alive until OSSL_PARAM_BLD_to_param() copies it
 	OSSL_PARAM* params = OSSL_PARAM_BLD_to_param(bld);
 	OSSL_PARAM_BLD_free(bld);
 
 	BN_clear_free(bn_d);
+	if (pub_buf != NULL) free(pub_buf);
 
 	if (params == NULL)
 		return NULL;

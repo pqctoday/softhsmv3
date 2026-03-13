@@ -44,7 +44,7 @@ endif()
 include_directories(${INCLUDE_DIRS})
 
 
-target_link_libraries(${PROJECT_NAME} softhsm2-static ${SQLITE3_LIBS} ${CPPUNIT_LIBRARIES})
+target_link_libraries(${PROJECT_NAME} softhsmv3-static ${SQLITE3_LIBS} ${CPPUNIT_LIBRARIES})
 
 target_compile_options(${PROJECT_NAME} PRIVATE ${COMPILE_OPTIONS})
 

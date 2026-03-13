@@ -40,32 +40,26 @@
 class MacTests : public CppUnit::TestFixture
 {
 	CPPUNIT_TEST_SUITE(MacTests);
-#ifndef WITH_FIPS
-	CPPUNIT_TEST(testHMACMD5);
-#endif
+
 	CPPUNIT_TEST(testHMACSHA1);
 	CPPUNIT_TEST(testHMACSHA224);
 	CPPUNIT_TEST(testHMACSHA256);
 	CPPUNIT_TEST(testHMACSHA384);
 	CPPUNIT_TEST(testHMACSHA512);
-	CPPUNIT_TEST(testCMACDES2);
-	CPPUNIT_TEST(testCMACDES3);
+
 	CPPUNIT_TEST(testCMACAES128);
 	CPPUNIT_TEST(testCMACAES192);
 	CPPUNIT_TEST(testCMACAES256);
 	CPPUNIT_TEST_SUITE_END();
 
 public:
-#ifndef WITH_FIPS
-	void testHMACMD5();
-#endif
+
 	void testHMACSHA1();
 	void testHMACSHA224();
 	void testHMACSHA256();
 	void testHMACSHA384();
 	void testHMACSHA512();
-	void testCMACDES2();
-	void testCMACDES3();
+
 	void testCMACAES128();
 	void testCMACAES192();
 	void testCMACAES256();

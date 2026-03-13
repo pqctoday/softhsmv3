@@ -400,6 +400,10 @@ void SoftHSM::prepareSupportedMechanisms(std::map<std::string, CK_MECHANISM_TYPE
 	t["CKM_AES_CBC_ENCRYPT_DATA"]	= CKM_AES_CBC_ENCRYPT_DATA;
 	t["CKM_AES_CMAC"]		= CKM_AES_CMAC;
 
+	// KMAC
+	t["CKM_KMAC_128"]		= CKM_KMAC_128;
+	t["CKM_KMAC_256"]		= CKM_KMAC_256;
+
 	// ECDSA + ECDH (DSA and DH PKCS removed)
 	t["CKM_EC_KEY_PAIR_GEN"]	= CKM_EC_KEY_PAIR_GEN;
 	t["CKM_ECDSA"]			= CKM_ECDSA;
@@ -790,6 +794,16 @@ CK_RV SoftHSM::C_GetMechanismInfo(CK_SLOT_ID slotID, CK_MECHANISM_TYPE type, CK_
 		case CKM_AES_CMAC:
 			pInfo->ulMinKeySize = 16;
 			pInfo->ulMaxKeySize = 32;
+			pInfo->flags = CKF_SIGN | CKF_VERIFY;
+			break;
+		case CKM_KMAC_128:
+			pInfo->ulMinKeySize = 16;
+			pInfo->ulMaxKeySize = UNLIMITED_KEY_SIZE;
+			pInfo->flags = CKF_SIGN | CKF_VERIFY;
+			break;
+		case CKM_KMAC_256:
+			pInfo->ulMinKeySize = 32;
+			pInfo->ulMaxKeySize = UNLIMITED_KEY_SIZE;
 			pInfo->flags = CKF_SIGN | CKF_VERIFY;
 			break;
 #ifdef WITH_ECC

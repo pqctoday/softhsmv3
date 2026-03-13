@@ -260,9 +260,6 @@ void RSATests::testSigningVerifying()
 
 	// Mechanisms to test
 	std::vector<AsymMech::Type> mechanisms;
-#ifndef WITH_FIPS
-	mechanisms.push_back(AsymMech::RSA_MD5_PKCS);
-#endif
 	mechanisms.push_back(AsymMech::RSA_SHA1_PKCS);
 	mechanisms.push_back(AsymMech::RSA_SHA224_PKCS);
 	mechanisms.push_back(AsymMech::RSA_SHA256_PKCS);
@@ -273,9 +270,6 @@ void RSATests::testSigningVerifying()
 	mechanisms.push_back(AsymMech::RSA_SHA256_PKCS_PSS);
 	mechanisms.push_back(AsymMech::RSA_SHA384_PKCS_PSS);
 	mechanisms.push_back(AsymMech::RSA_SHA512_PKCS_PSS);
-#ifndef WITH_FIPS
-	mechanisms.push_back(AsymMech::RSA_SSL);
-#endif
 
 	/* Max salt length for SHA512 and 1024-bit RSA is 62 bytes */
 	RSA_PKCS_PSS_PARAMS pssParams[] = {

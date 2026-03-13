@@ -207,7 +207,7 @@ void SessionManagerTests::testSessionInfo()
 	// Public RW session info
 	rv = sessionManager.openSession(slot, CKF_SERIAL_SESSION | CKF_RW_SESSION, NULL_PTR, NULL_PTR, &hSession);
 	CPPUNIT_ASSERT(rv == CKR_OK);
-	Session* session = sessionManager.getSession(CK_INVALID_HANDLE);
+	std::shared_ptr<Session> session = sessionManager.getSession(CK_INVALID_HANDLE);
 	CPPUNIT_ASSERT(session == NULL);
 	session = sessionManager.getSession(hSession);
 	CPPUNIT_ASSERT(session != NULL);

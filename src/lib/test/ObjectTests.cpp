@@ -2397,6 +2397,7 @@ void ObjectTests::testCreateSecretKey()
 	rv = CRYPTOKI_F_PTR( C_DestroyObject(hSession,hObject) );
 	CPPUNIT_ASSERT_EQUAL(CKR_OK, rv);
 
+/* // DES PRUNED
 	keyType = CKK_DES;
 	attribs[0].pValue = desKey;
 	attribs[0].ulValueLen = sizeof(desKey);
@@ -2432,5 +2433,6 @@ void ObjectTests::testCreateSecretKey()
 	CPPUNIT_ASSERT(memcmp(pCheckValue, des3KCV, 3) == 0);
 	rv = CRYPTOKI_F_PTR( C_DestroyObject(hSession,hObject) );
 	CPPUNIT_ASSERT_EQUAL(CKR_OK, rv);
+*/
 }
 

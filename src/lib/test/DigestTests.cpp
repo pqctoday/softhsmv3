@@ -285,7 +285,7 @@ void DigestTests::testDigestAll()
 	CK_SESSION_HANDLE hSession;
 	CK_MECHANISM mechanisms[] = {
 #ifndef WITH_FIPS
-		{ CKM_MD5, NULL_PTR, 0 },
+		// { CKM_MD5, NULL_PTR, 0 }, // Deprecated
 #endif
 		{ CKM_SHA_1, NULL_PTR, 0 },
 		{ CKM_SHA224, NULL_PTR, 0 },

@@ -54,7 +54,9 @@ struct MacAlgo
 		HMAC_SHA3_384,
 		HMAC_SHA3_512,
 		CMAC_DES,
-		CMAC_AES
+		CMAC_AES,
+		KMAC_128,
+		KMAC_256
 	};
 };
 

@@ -1249,6 +1249,10 @@ typedef CK_ULONG          CK_MECHANISM_TYPE;
 
 #define CKM_VENDOR_DEFINED             0x80000000UL
 
+/* KMAC Mechanisms (Vendor Defined for SoftHSMv3 PQC/v3.2 testing) */
+#define CKM_KMAC_128                   (CKM_VENDOR_DEFINED | 0x00000100UL)
+#define CKM_KMAC_256                   (CKM_VENDOR_DEFINED | 0x00000101UL)
+
 typedef CK_MECHANISM_TYPE CK_PTR CK_MECHANISM_TYPE_PTR;
 
 

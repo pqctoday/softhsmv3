@@ -811,80 +811,18 @@ void DeriveTests::testSymDerive()
 	CPPUNIT_ASSERT(rv == CKR_OK);
 
 	// Generate base key
-#ifndef WITH_FIPS
-        CK_OBJECT_HANDLE hKeyDes = CK_INVALID_HANDLE;
-#endif
-        CK_OBJECT_HANDLE hKeyDes2 = CK_INVALID_HANDLE;
-        CK_OBJECT_HANDLE hKeyDes3 = CK_INVALID_HANDLE;
         CK_OBJECT_HANDLE hKeyAes = CK_INVALID_HANDLE;
-#ifndef WITH_FIPS
-        rv = generateDesKey(hSessionRW,IN_SESSION,IS_PUBLIC,hKeyDes);
-        CPPUNIT_ASSERT(rv == CKR_OK);
-#endif
-        rv = generateDes2Key(hSessionRW,IN_SESSION,IS_PUBLIC,hKeyDes2);
-        CPPUNIT_ASSERT(rv == CKR_OK);
-        rv = generateDes3Key(hSessionRW,IN_SESSION,IS_PUBLIC,hKeyDes3);
-        CPPUNIT_ASSERT(rv == CKR_OK);
+
         rv = generateAesKey(hSessionRW,IN_SESSION,IS_PUBLIC,hKeyAes);
         CPPUNIT_ASSERT(rv == CKR_OK);
 
 	// Derive keys
 	CK_OBJECT_HANDLE hDerive = CK_INVALID_HANDLE;
-#ifndef WITH_FIPS
-	symDerive(hSessionRW,hKeyDes,hDerive,CKM_DES_ECB_ENCRYPT_DATA,CKK_GENERIC_SECRET);
-	symDerive(hSessionRW,hKeyDes,hDerive,CKM_DES_ECB_ENCRYPT_DATA,CKK_DES);
-	symDerive(hSessionRW,hKeyDes,hDerive,CKM_DES_ECB_ENCRYPT_DATA,CKK_DES2);
-	symDerive(hSessionRW,hKeyDes,hDerive,CKM_DES_ECB_ENCRYPT_DATA,CKK_DES3);
-	symDerive(hSessionRW,hKeyDes,hDerive,CKM_DES_ECB_ENCRYPT_DATA,CKK_AES);
-#endif
-	symDerive(hSessionRW,hKeyDes2,hDerive,CKM_DES3_ECB_ENCRYPT_DATA,CKK_GENERIC_SECRET);
-#ifndef WITH_FIPS
-	symDerive(hSessionRW,hKeyDes2,hDerive,CKM_DES3_ECB_ENCRYPT_DATA,CKK_DES);
-#endif
-	symDerive(hSessionRW,hKeyDes2,hDerive,CKM_DES3_ECB_ENCRYPT_DATA,CKK_DES2);
-	symDerive(hSessionRW,hKeyDes2,hDerive,CKM_DES3_ECB_ENCRYPT_DATA,CKK_DES3);
-	symDerive(hSessionRW,hKeyDes2,hDerive,CKM_DES3_ECB_ENCRYPT_DATA,CKK_AES);
-	symDerive(hSessionRW,hKeyDes3,hDerive,CKM_DES3_ECB_ENCRYPT_DATA,CKK_GENERIC_SECRET);
-#ifndef WITH_FIPS
-	symDerive(hSessionRW,hKeyDes3,hDerive,CKM_DES3_ECB_ENCRYPT_DATA,CKK_DES);
-#endif
-	symDerive(hSessionRW,hKeyDes3,hDerive,CKM_DES3_ECB_ENCRYPT_DATA,CKK_DES2);
-	symDerive(hSessionRW,hKeyDes3,hDerive,CKM_DES3_ECB_ENCRYPT_DATA,CKK_DES3);
-	symDerive(hSessionRW,hKeyDes3,hDerive,CKM_DES3_ECB_ENCRYPT_DATA,CKK_AES);
+
 	symDerive(hSessionRW,hKeyAes,hDerive,CKM_AES_ECB_ENCRYPT_DATA,CKK_GENERIC_SECRET);
-#ifndef WITH_FIPS
-	symDerive(hSessionRW,hKeyAes,hDerive,CKM_AES_ECB_ENCRYPT_DATA,CKK_DES);
-#endif
-	symDerive(hSessionRW,hKeyAes,hDerive,CKM_AES_ECB_ENCRYPT_DATA,CKK_DES2);
-	symDerive(hSessionRW,hKeyAes,hDerive,CKM_AES_ECB_ENCRYPT_DATA,CKK_DES3);
 	symDerive(hSessionRW,hKeyAes,hDerive,CKM_AES_ECB_ENCRYPT_DATA,CKK_AES);
-#ifndef WITH_FIPS
-	symDerive(hSessionRW,hKeyDes,hDerive,CKM_DES_CBC_ENCRYPT_DATA,CKK_GENERIC_SECRET);
-	symDerive(hSessionRW,hKeyDes,hDerive,CKM_DES_CBC_ENCRYPT_DATA,CKK_DES);
-	symDerive(hSessionRW,hKeyDes,hDerive,CKM_DES_CBC_ENCRYPT_DATA,CKK_DES2);
-	symDerive(hSessionRW,hKeyDes,hDerive,CKM_DES_CBC_ENCRYPT_DATA,CKK_DES3);
-	symDerive(hSessionRW,hKeyDes,hDerive,CKM_DES_CBC_ENCRYPT_DATA,CKK_AES);
-#endif
-	symDerive(hSessionRW,hKeyDes2,hDerive,CKM_DES3_CBC_ENCRYPT_DATA,CKK_GENERIC_SECRET);
-#ifndef WITH_FIPS
-	symDerive(hSessionRW,hKeyDes2,hDerive,CKM_DES3_CBC_ENCRYPT_DATA,CKK_DES);
-#endif
-	symDerive(hSessionRW,hKeyDes2,hDerive,CKM_DES3_CBC_ENCRYPT_DATA,CKK_DES2);
-	symDerive(hSessionRW,hKeyDes2,hDerive,CKM_DES3_CBC_ENCRYPT_DATA,CKK_DES3);
-	symDerive(hSessionRW,hKeyDes2,hDerive,CKM_DES3_CBC_ENCRYPT_DATA,CKK_AES);
-	symDerive(hSessionRW,hKeyDes3,hDerive,CKM_DES3_CBC_ENCRYPT_DATA,CKK_GENERIC_SECRET);
-#ifndef WITH_FIPS
-	symDerive(hSessionRW,hKeyDes3,hDerive,CKM_DES3_CBC_ENCRYPT_DATA,CKK_DES);
-#endif
-	symDerive(hSessionRW,hKeyDes3,hDerive,CKM_DES3_CBC_ENCRYPT_DATA,CKK_DES2);
-	symDerive(hSessionRW,hKeyDes3,hDerive,CKM_DES3_CBC_ENCRYPT_DATA,CKK_DES3);
-	symDerive(hSessionRW,hKeyDes3,hDerive,CKM_DES3_CBC_ENCRYPT_DATA,CKK_AES);
+
 	symDerive(hSessionRW,hKeyAes,hDerive,CKM_AES_CBC_ENCRYPT_DATA,CKK_GENERIC_SECRET);
-#ifndef WITH_FIPS
-	symDerive(hSessionRW,hKeyAes,hDerive,CKM_AES_CBC_ENCRYPT_DATA,CKK_DES);
-#endif
-	symDerive(hSessionRW,hKeyAes,hDerive,CKM_AES_CBC_ENCRYPT_DATA,CKK_DES2);
-	symDerive(hSessionRW,hKeyAes,hDerive,CKM_AES_CBC_ENCRYPT_DATA,CKK_DES3);
 	symDerive(hSessionRW,hKeyAes,hDerive,CKM_AES_CBC_ENCRYPT_DATA,CKK_AES);
 }
 

@@ -76,6 +76,7 @@ set(SOURCES
     OSSLEVPMacAlgorithm.cpp
     OSSLEVPSymmetricAlgorithm.cpp
     OSSLHMAC.cpp
+    OSSLKMAC.cpp
     OSSLRNG.cpp
     OSSLRSA.cpp
     OSSLRSAKeyPair.cpp

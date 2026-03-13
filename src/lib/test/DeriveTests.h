@@ -39,7 +39,7 @@
 class DeriveTests : public TestsBase
 {
 	CPPUNIT_TEST_SUITE(DeriveTests);
-	CPPUNIT_TEST(testDhDerive);
+	// CPPUNIT_TEST(testDhDerive); // DH removed
 #ifdef WITH_ECC
 	CPPUNIT_TEST(testEcdsaDerive);
 #endif

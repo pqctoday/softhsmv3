@@ -45,6 +45,7 @@
 #include "OSSLSHA512.h"
 #include "OSSLSHA3.h"
 #include "OSSLCMAC.h"
+#include "OSSLKMAC.h"
 #include "OSSLHMAC.h"
 #include "OSSLRSA.h"
 #include "OSSLECDH.h"
@@ -78,10 +79,11 @@ OSSLCryptoFactory::~OSSLCryptoFactory()
 // Return the one-and-only instance
 OSSLCryptoFactory* OSSLCryptoFactory::i()
 {
-	static std::once_flag s_initFlag;
-	std::call_once(s_initFlag, []() {
+	static std::mutex s_initMutex;
+	std::lock_guard<std::mutex> lock(s_initMutex);
+	if (!instance) {
 		instance.reset(new OSSLCryptoFactory());
-	});
+	}
 	return instance.get();
 }
 
@@ -192,6 +194,10 @@ MacAlgorithm* OSSLCryptoFactory::getMacAlgorithm(MacAlgo::Type algorithm)
 			return new OSSLHMACSHA3_512();
 		case MacAlgo::CMAC_AES:
 			return new OSSLCMACAES();
+		case MacAlgo::KMAC_128:
+			return new OSSLKMAC128();
+		case MacAlgo::KMAC_256:
+			return new OSSLKMAC256();
 		default:
 			break;
 	}

@@ -43,12 +43,12 @@ class SymmetricAlgorithmTests : public TestsBase
 {
 	CPPUNIT_TEST_SUITE(SymmetricAlgorithmTests);
 	CPPUNIT_TEST(testAesEncryptDecrypt);
-	CPPUNIT_TEST(testDesEncryptDecrypt);
+	// CPPUNIT_TEST(testDesEncryptDecrypt);
 #ifdef HAVE_AES_KEY_WRAP
-	CPPUNIT_TEST(testAesWrapUnwrap);
+	// CPPUNIT_TEST(testAesWrapUnwrap); // relies on wrapping AES with DES which is pruned
 #endif
-	CPPUNIT_TEST(testNullTemplate);
-	CPPUNIT_TEST(testNonModifiableDesKeyGeneration);
+	// CPPUNIT_TEST(testNullTemplate); // uses DES
+	// CPPUNIT_TEST(testNonModifiableDesKeyGeneration);
 	// TODO: check CKA_CHECK_VALUE error
 	//CPPUNIT_TEST(testCheckValue);
 	CPPUNIT_TEST(testAesCtrOverflow);

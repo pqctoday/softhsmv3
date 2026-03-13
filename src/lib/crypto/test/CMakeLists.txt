@@ -13,9 +13,6 @@ set(INCLUDE_DIRS ${PROJECT_SOURCE_DIR}/..
 
 set(SOURCES cryptotest.cpp
             AESTests.cpp
-            DESTests.cpp
-            DHTests.cpp
-            DSATests.cpp
             ECDHTests.cpp
             ECDSATests.cpp
             EDDSATests.cpp
@@ -32,7 +29,7 @@ set(SOURCES cryptotest.cpp
 include_directories(${INCLUDE_DIRS})
 
 add_executable(${PROJECT_NAME} ${SOURCES})
-target_link_libraries(${PROJECT_NAME} softhsm2-static ${CPPUNIT_LIBRARIES})
+target_link_libraries(${PROJECT_NAME} softhsmv3-static ${CPPUNIT_LIBRARIES})
 target_compile_options(${PROJECT_NAME} PRIVATE ${COMPILE_OPTIONS})
 
 add_test(${PROJECT_NAME} ${PROJECT_NAME})
